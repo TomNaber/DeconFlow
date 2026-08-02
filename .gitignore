@@ -1,0 +1,7 @@
+.deconvolution_temp/*
+*DS_Store
+.vscode/*
+Comparison photos/*
+dcv/*
+psfs/*
+examples/*
