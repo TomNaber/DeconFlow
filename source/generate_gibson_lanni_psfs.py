@@ -61,7 +61,7 @@ def main():
     for index, channel in enumerate(CHANNELS):
         name = channel["name"]
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
-        filename = f"psf_C{index}_{safe_name}.tif"
+        filename = f"psf_C{index + 1}_{safe_name}.tif"
         output_path = OUTPUT_DIR / filename
 
         manifest["channels"].append(

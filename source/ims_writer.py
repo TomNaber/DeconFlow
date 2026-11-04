@@ -117,11 +117,14 @@ def _times(source, count):
     ]
 
 
-def _colors(source, channel_ranges):
+def _colors(source, channel_ranges, channel_colors=None):
     colors = []
     for index, channel_range in enumerate(channel_ranges):
         values = source[f"Channel {index}"]
-        red, green, blue = (float(value) for value in values["Color"].split()[:3])
+        override = channel_colors[index] if channel_colors is not None else None
+        red, green, blue = override if override is not None else (
+            float(value) for value in values["Color"].split()[:3]
+        )
         info = writer.ColorInfo()
         info.set_base_color(writer.Color(red, green, blue, 1.0))
         info.mOpacity = float(values.get("ColorOpacity", 1.0))
@@ -149,6 +152,7 @@ def write_imaris(
     excitation_wavelengths_nm,
     emission_wavelengths_nm,
     source_ims,
+    channel_colors=None,
 ):
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,7 +202,7 @@ def write_imaris(
             _extents(source),
             _parameters(sections),
             _times(source, sizes["t"]),
-            _colors(source, channel_ranges),
+            _colors(source, channel_ranges, channel_colors),
             True,
         )
         print()

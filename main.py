@@ -33,6 +33,9 @@ def main():
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
     from tkinter.scrolledtext import ScrolledText
+    from source.channel_metadata import read_channels
+    from source.edit_ims_channels import NAMED_COLORS
+    from source.psf_channels import read_psf_channels
 
     window = tk.Tk()
     window.title("Richardson-Lucy deconvolution and Gibson Lanni point-spread functions")
@@ -95,6 +98,102 @@ def main():
     ]
     for row, setting in enumerate(deconvolution):
         add_field(panels["Deconvolution"], "Deconvolution", row, *setting)
+
+    channel_panel = ttk.LabelFrame(panels["Deconvolution"], text="Channel pseudocolor", padding=8)
+    channel_panel.grid(row=len(deconvolution), column=0, columnspan=2, sticky="ew", pady=(10, 0))
+    channel_panel.columnconfigure(1, weight=1)
+    channel_preferences = {}
+    channel_variables = {}
+    active_channels = []
+    psf_signature = []
+    psf_overrides = {}
+    psf_selections = {}
+    refresh_job = None
+
+    def refresh_channels():
+        nonlocal active_channels, refresh_job, psf_signature
+        refresh_job = None
+        for widget in channel_panel.winfo_children():
+            widget.destroy()
+        channel_variables.clear()
+        psf_selections.clear()
+        active_channels = []
+        folder = Path(fields["Deconvolution"]["INPUT_DIR"][0].get()).expanduser()
+        try:
+            files = sorted(folder.glob("*.ims")) if folder.is_dir() else []
+            if not files:
+                raise ValueError("No .ims files in the selected input folder.")
+            active_channels = read_channels(files[0])
+            if not active_channels:
+                raise ValueError("No channels found in the first input file.")
+        except (OSError, KeyError, ValueError) as error:
+            ttk.Label(channel_panel, text=str(error), wraplength=950).grid(row=0, column=0, columnspan=4, sticky="w")
+            return
+        signature = [channel["name"] for channel in active_channels]
+        if signature != psf_signature:
+            psf_overrides.clear()
+            psf_signature = signature
+        try:
+            catalog = read_psf_channels(Path(fields["Deconvolution"]["PSF_DIR"][0].get()).expanduser())
+            psf_error = None
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            catalog = []
+            psf_error = str(error)
+        automatic = {str(entry["index"]): entry["psf_file"] for entry in catalog}
+        labels = {
+            entry["psf_file"]: (entry["name"] if sum(other["name"] == entry["name"] for other in catalog) == 1
+                                else f"{entry['name']} ({entry['psf_file']})")
+            for entry in catalog
+        }
+        for column, label in enumerate(("Input channel", "Output channel name", "PSF channel", "Pseudocolor")):
+            ttk.Label(channel_panel, text=label).grid(row=0, column=column, sticky="w", padx=5)
+        for row, channel in enumerate(active_channels, start=1):
+            key = str(channel["index"])
+            preference = channel_preferences.setdefault(key, {"name": channel["name"], "color": "Original"})
+            name = tk.StringVar(value=preference["name"])
+            color = tk.StringVar(value=preference["color"])
+            label = f"C{channel['index'] + 1}: {channel['name']}"
+            ttk.Label(channel_panel, text=label).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            ttk.Entry(channel_panel, textvariable=name).grid(row=row, column=1, sticky="ew", padx=5, pady=3)
+            selected_file = psf_overrides.get(key, automatic.get(key))
+            if key in psf_overrides and selected_file == automatic.get(key):
+                del psf_overrides[key]
+            psf = tk.StringVar(value=labels.get(selected_file, f"Unavailable: {selected_file}" if selected_file else "No matching PSF"))
+            psf_selections[key] = selected_file if selected_file in labels else None
+            ttk.Combobox(channel_panel, textvariable=psf, values=tuple(labels.values()),
+                         state="readonly", width=22).grid(row=row, column=2, padx=5, pady=3)
+            ttk.Combobox(channel_panel, textvariable=color, values=("Original", *NAMED_COLORS),
+                         state="readonly", width=14).grid(row=row, column=3, padx=5, pady=3)
+
+            def psf_changed(*args, key=key, psf=psf):
+                filename = next(filename for filename, label in labels.items() if label == psf.get())
+                psf_selections[key] = filename
+                if filename == automatic.get(key):
+                    psf_overrides.pop(key, None)
+                else:
+                    psf_overrides[key] = filename
+                save_settings()
+
+            psf.trace_add("write", psf_changed)
+            # Keep the Tk variable alive for the lifetime of its dropdown.
+            channel_variables[key] = (name, color, psf)
+
+            def changed(*args, key=key, name=name, color=color):
+                channel_preferences[key] = {"name": name.get(), "color": color.get()}
+                save_settings()
+
+            name.trace_add("write", changed)
+            color.trace_add("write", changed)
+        if psf_error:
+            ttk.Label(channel_panel, text=psf_error, wraplength=950).grid(
+                row=len(active_channels) + 1, column=0, columnspan=4, sticky="w")
+        save_settings()
+
+    def schedule_channel_refresh(*args):
+        nonlocal refresh_job
+        if refresh_job is not None:
+            window.after_cancel(refresh_job)
+        refresh_job = window.after(300, refresh_channels)
 
     psf_panel = panels["PSF generation"]
     ttk.Checkbutton(psf_panel, text="Separate objective design and actual imaging conditions", variable=separate,
@@ -174,6 +273,14 @@ def main():
             settings[group] = {name: str(variable.get()) for name, (variable, _, _) in entries.items()}
         settings["PSF generation"]["separate_design_actual"] = str(separate.get())
         settings["PSF generation"]["channels"] = json.dumps(channels.get("1.0", "end-1c"))
+        settings["Channel pseudocolor"] = {
+            key: json.dumps(value) for key, value in channel_preferences.items()
+        }
+        if psf_overrides:
+            settings["PSF assignment"] = {
+                "input_channels": json.dumps(psf_signature),
+                "overrides": json.dumps(psf_overrides),
+            }
         try:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = settings_path.with_suffix(".tmp")
@@ -200,6 +307,10 @@ def main():
             channels.insert("1.0", default_channels)
             channels.edit_modified(False)
             show_actual()
+        else:
+            channel_preferences.clear()
+            psf_overrides.clear()
+            refresh_channels()
         saving_paused = False
         save_settings()
 
@@ -207,6 +318,23 @@ def main():
     try:
         load_path = settings_path if settings_path.exists() else ROOT / "userdata" / "settings.ini"
         settings.read(load_path, encoding="utf-8")
+        if settings.has_section("PSF assignment"):
+            signature = json.loads(settings.get("PSF assignment", "input_channels"))
+            overrides = json.loads(settings.get("PSF assignment", "overrides"))
+            if (not isinstance(signature, list) or not all(isinstance(name, str) for name in signature)
+                    or not isinstance(overrides, dict)
+                    or not all(key.isdigit() and isinstance(value, str) for key, value in overrides.items())):
+                raise ValueError("Invalid saved PSF assignment")
+            psf_signature = signature
+            psf_overrides.update(overrides)
+        if settings.has_section("Channel pseudocolor"):
+            for key, raw in settings.items("Channel pseudocolor"):
+                preference = json.loads(raw)
+                if (not key.isdigit() or not isinstance(preference, dict)
+                        or not isinstance(preference.get("name"), str)
+                        or preference.get("color") not in ("Original", *NAMED_COLORS)):
+                    raise ValueError("Invalid saved channel settings")
+                channel_preferences[key] = preference
         for group, entries in fields.items():
             for name, (variable, kind, _) in entries.items():
                 if settings.has_option(group, name):
@@ -231,6 +359,9 @@ def main():
     separate.trace_add("write", save_settings)
     channels.edit_modified(False)
     channels.bind("<<Modified>>", channels_changed)
+    fields["Deconvolution"]["INPUT_DIR"][0].trace_add("write", schedule_channel_refresh)
+    fields["Deconvolution"]["PSF_DIR"][0].trace_add("write", schedule_channel_refresh)
+    refresh_channels()
     save_settings()
 
     def start():
@@ -254,6 +385,26 @@ def main():
                 except (ValueError, tk.TclError):
                     raise ValueError(f"Enter a valid value for {label}.") from None
                 settings[name] = value
+            if group == "Deconvolution":
+                if refresh_job is not None:
+                    window.after_cancel(refresh_job)
+                refresh_channels()
+                if not active_channels:
+                    raise ValueError("Select an input folder with readable IMS channel metadata.")
+                settings["CHANNEL_EDITS"] = {}
+                settings["PSF_FILES"] = []
+                for channel in active_channels:
+                    key = str(channel["index"])
+                    if not psf_selections.get(key):
+                        raise ValueError(f"Select an available PSF for C{int(key) + 1}.")
+                    settings["PSF_FILES"].append(psf_selections[key])
+                    preference = channel_preferences[key]
+                    if not preference["name"].strip():
+                        raise ValueError(f"Enter an output name for C{int(key) + 1}.")
+                    edit = {"name": preference["name"].strip()}
+                    if preference["color"] != "Original":
+                        edit["color"] = preference["color"]
+                    settings["CHANNEL_EDITS"][key] = edit
             if group == "PSF generation":
                 if not separate.get():
                     for design, actual, _, _ in pairs:
@@ -325,6 +476,7 @@ def main():
                 process = None
                 run_button.configure(state="normal")
                 cancel_button.configure(state="disabled")
+                refresh_channels()
             console.configure(state="normal")
             console.insert("end", item)
             console.see("end")

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import gc
-import json
 import os
 import shutil
 import subprocess
@@ -18,6 +17,8 @@ import tifffile
 from bioio import BioImage
 
 from ims_writer import write_imaris
+from edit_ims_channels import parse_color
+from psf_channels import read_psf_channels
 
 
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -35,6 +36,8 @@ FIJI_EXECUTABLE = Path(
 )
 FIJI_MEMORY = "12g"
 OVERWRITE = False
+CHANNEL_EDITS = {}
+PSF_FILES = []
 
 
 @contextmanager
@@ -57,13 +60,12 @@ def quiet_bioformats():
 
 
 def load_psfs():
-    manifest_path = PSF_DIR / "psf_manifest.json"
-    if not manifest_path.is_file():
-        raise FileNotFoundError(manifest_path)
-    channels = sorted(
-        json.loads(manifest_path.read_text(encoding="utf-8"))["channels"],
-        key=lambda channel: channel["index"],
-    )
+    channels = read_psf_channels(PSF_DIR)
+    if PSF_FILES:
+        by_file = {channel["psf_file"]: channel for channel in channels}
+        channels = [by_file[filename] for filename in PSF_FILES]
+    elif [channel["index"] for channel in channels] != list(range(len(channels))):
+        raise ValueError("PSF channel numbering must be consecutive for automatic assignment")
     psfs = []
     for channel in channels:
         path = PSF_DIR / channel["psf_file"]
@@ -256,6 +258,16 @@ def process_file(input_path, channels, psfs):
         reader = open_ims(input_path)
         shape = tuple(int(getattr(reader.dims, axis)) for axis in "TCZYX")
         n_t, n_c, _, _, _ = shape
+        if n_c > len(psfs):
+            raise ValueError(f"Image has {n_c} channels but only {len(psfs)} PSFs are available")
+        output_names = [channel["name"] for channel in channels[:n_c]]
+        output_colors = [None] * n_c
+        for index in range(n_c):
+            edit = CHANNEL_EDITS.get(str(index), CHANNEL_EDITS.get(index, {}))
+            if "name" in edit:
+                output_names[index] = edit["name"]
+            if "color" in edit:
+                output_colors[index] = parse_color(edit["color"])
         dz, dy, dx = voxel_size(reader)
         print(f"\nProcessing {input_path.name}")
         print(f"  Shape TCZYX: {shape}")
@@ -273,7 +285,8 @@ def process_file(input_path, channels, psfs):
         write_imaris(
             output,
             partial_path,
-            channel_names=[channel["name"] for channel in channels[:n_c]],
+            channel_names=output_names,
+            channel_colors=output_colors,
             channel_ranges=channel_ranges,
             excitation_wavelengths_nm=[
                 channel.get("excitation_nm") for channel in channels[:n_c]
