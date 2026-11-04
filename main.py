@@ -1,3 +1,4 @@
+import configparser
 import importlib
 import json
 import math
@@ -150,6 +151,88 @@ def main():
             panel.pack_forget()
         panels[mode.get()].pack(fill="x", after=toolbar)
 
+    if sys.platform == "darwin":
+        data_dir = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        data_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        data_dir = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    settings_path = data_dir / "Batch Deconvolution" / "settings.ini"
+    defaults = {
+        group: {name: variable.get() for name, (variable, _, _) in entries.items()}
+        for group, entries in fields.items()
+    }
+    default_channels = channels.get("1.0", "end-1c")
+    saving_paused = False
+
+    def save_settings(*args):
+        if saving_paused:
+            return
+        settings = configparser.ConfigParser(interpolation=None)
+        settings["GUI"] = {"mode": mode.get()}
+        for group, entries in fields.items():
+            settings[group] = {name: str(variable.get()) for name, (variable, _, _) in entries.items()}
+        settings["PSF generation"]["separate_design_actual"] = str(separate.get())
+        settings["PSF generation"]["channels"] = json.dumps(channels.get("1.0", "end-1c"))
+        try:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = settings_path.with_suffix(".tmp")
+            with temporary.open("w", encoding="utf-8") as handle:
+                settings.write(handle)
+            temporary.replace(settings_path)
+        except OSError as error:
+            events.put(f"Cannot save settings: {error}\n")
+
+    def channels_changed(event):
+        if channels.edit_modified():
+            channels.edit_modified(False)
+            save_settings()
+
+    def restore_defaults():
+        nonlocal saving_paused
+        saving_paused = True
+        group = mode.get()
+        for name, value in defaults[group].items():
+            fields[group][name][0].set(value)
+        if group == "PSF generation":
+            separate.set(False)
+            channels.delete("1.0", "end")
+            channels.insert("1.0", default_channels)
+            channels.edit_modified(False)
+            show_actual()
+        saving_paused = False
+        save_settings()
+
+    settings = configparser.ConfigParser(interpolation=None)
+    try:
+        load_path = settings_path if settings_path.exists() else ROOT / "userdata" / "settings.ini"
+        settings.read(load_path, encoding="utf-8")
+        for group, entries in fields.items():
+            for name, (variable, kind, _) in entries.items():
+                if settings.has_option(group, name):
+                    value = settings.getboolean(group, name) if kind is bool else settings.get(group, name)
+                    variable.set(value)
+        separate.set(settings.getboolean("PSF generation", "separate_design_actual", fallback=False))
+        saved_channels = json.loads(settings.get("PSF generation", "channels", fallback=json.dumps(default_channels)))
+        if not isinstance(saved_channels, str):
+            raise ValueError("Invalid saved channel text")
+        channels.delete("1.0", "end")
+        channels.insert("1.0", saved_channels)
+        saved_mode = settings.get("GUI", "mode", fallback="Deconvolution")
+        if saved_mode in panels:
+            mode.set(saved_mode)
+    except (OSError, UnicodeError, ValueError, configparser.Error) as error:
+        events.put(f"Could not load all saved settings: {error}\n")
+
+    for entries in fields.values():
+        for variable, _, _ in entries.values():
+            variable.trace_add("write", save_settings)
+    mode.trace_add("write", save_settings)
+    separate.trace_add("write", save_settings)
+    channels.edit_modified(False)
+    channels.bind("<<Modified>>", channels_changed)
+    save_settings()
+
     def start():
         nonlocal process, cancelled
         group = mode.get()
@@ -255,11 +338,12 @@ def main():
             window.destroy()
 
     buttons = ttk.Frame(window)
-    buttons.pack(anchor="w", padx=10, pady=5)
+    buttons.pack(fill="x", padx=10, pady=5)
     run_button = ttk.Button(buttons, text="Run", command=start)
     run_button.pack(side="left")
     cancel_button = ttk.Button(buttons, text="Cancel", command=cancel, state="disabled")
     cancel_button.pack(side="left", padx=5)
+    ttk.Button(buttons, text="Restore defaults", command=restore_defaults).pack(side="right")
     ttk.Label(window, text="Console").pack(anchor="w", padx=10)
     console = ScrolledText(window, height=12, state="disabled", wrap="word")
     console.pack(fill="both", expand=True, padx=10, pady=(5, 10))
