@@ -78,7 +78,14 @@ def main():
             ttk.Entry(holder, textvariable=variable, width=18).pack(side="left", fill="x", expand=True)
         if browse:
             def choose():
-                value = filedialog.askdirectory(parent=window) if browse == "directory" else filedialog.askopenfilename(parent=window)
+                current = Path(variable.get().strip()).expanduser()
+                initial = current if browse == "directory" else current.parent
+                while not initial.is_dir() and initial != initial.parent:
+                    initial = initial.parent
+                if browse == "directory":
+                    value = filedialog.askdirectory(parent=window, initialdir=str(initial.resolve()))
+                else:
+                    value = filedialog.askopenfilename(parent=window, initialdir=str(initial.resolve()))
                 if value:
                     variable.set(value)
             ttk.Button(holder, text="Browse", command=choose).pack(side="left", padx=(5, 0))
