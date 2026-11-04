@@ -1,4 +1,5 @@
 import multiprocessing
+import json
 import os
 from pathlib import Path
 import queue
@@ -6,10 +7,11 @@ import signal
 from tempfile import TemporaryDirectory
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 import numpy as np
 from PIL import Image, ImageTk
+from PIL.PngImagePlugin import PngInfo
 
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
@@ -70,6 +72,8 @@ class Preview(ttk.LabelFrame):
         self.deconvolve_button.pack(side="left")
         self.sync_button = ttk.Checkbutton(actions, text="Sync preview", variable=self.sync, command=self.sync_changed)
         self.sync_button.pack(side="left", padx=8)
+        self.export_button = ttk.Button(actions, text="Export screenshot", command=self.export_screenshot, state="disabled")
+        self.export_button.pack(side="right")
         self.views = ttk.Frame(self)
         self.views.pack(fill="both", expand=True)
         self.views.columnconfigure(0, weight=3)
@@ -132,6 +136,7 @@ class Preview(ttk.LabelFrame):
             widget.configure(state="disabled" if disabled else "normal")
         ready = self.matches_loaded() and self.selected_channels and not disabled and self.busy is None and not self.sync.get()
         self.deconvolve_button.configure(state="normal" if ready else "disabled")
+        self.export_button.configure(state="normal" if self.images and not disabled else "disabled")
         self.on_activity()
 
     def matches_loaded(self):
@@ -292,9 +297,9 @@ class Preview(ttk.LabelFrame):
                         self.images[row, axis] = composite(channels, axis, self.preferences)
             self.draw()
 
-    def draw(self):
+    def render_views(self):
         if self.data is None:
-            return
+            return {}
         z, y, x = self.data["shape"]
         dz, dy, dx = self.data["spacing"]
         widths = {"xy": x * dx, "yz": z * dz}
@@ -304,13 +309,76 @@ class Preview(ttk.LabelFrame):
             for (row, axis), canvas in self.canvases.items()
         )
         if scale <= 0:
-            return
+            return {}
+        rendered = {}
         for (row, axis), image in self.images.items():
             canvas = self.canvases[row, axis]
             size = max(1, round(widths[axis] * scale)), max(1, round(height * scale))
-            self.photos[row, axis] = ImageTk.PhotoImage(image.resize(size, Image.Resampling.BILINEAR), master=self)
+            frame = Image.new("RGB", (canvas.winfo_width(), canvas.winfo_height()), canvas.cget("background"))
+            frame.paste(image.resize(size, Image.Resampling.BILINEAR),
+                        ((frame.width - size[0]) // 2, (frame.height - size[1]) // 2))
+            rendered[row, axis] = frame
+        return rendered
+
+    def draw(self):
+        for key, image in self.render_views().items():
+            canvas = self.canvases[key]
+            self.photos[key] = ImageTk.PhotoImage(image, master=self)
             canvas.delete("all")
-            canvas.create_image(canvas.winfo_width() / 2, canvas.winfo_height() / 2, image=self.photos[row, axis])
+            canvas.create_image(0, 0, anchor="nw", image=self.photos[key])
+
+    def screenshot(self):
+        rendered = self.render_views()
+        row = 1 if (1, "xy") in rendered else 0
+        if (row, "xy") not in rendered:
+            return None
+        canvases = [self.canvases[row, axis] for axis in ("xy", "yz")]
+        left = min(canvas.winfo_x() for canvas in canvases)
+        top = min(canvas.winfo_y() for canvas in canvases)
+        right = max(canvas.winfo_x() + canvas.winfo_width() for canvas in canvases)
+        bottom = max(canvas.winfo_y() + canvas.winfo_height() for canvas in canvases)
+        background = ttk.Style(self).lookup("TFrame", "background") or "#242424"
+        background = tuple(value // 257 for value in self.winfo_rgb(background))
+        image = Image.new("RGB", (right - left, bottom - top), background)
+        for axis, canvas in zip(("xy", "yz"), canvases):
+            image.paste(rendered[row, axis], (canvas.winfo_x() - left, canvas.winfo_y() - top))
+        data = self.deconvolved if row else self.data
+        channels = [channel for channel in data["channels"] if channel["index"] in self.selected_channels]
+        stem = Path(data["path"]).stem
+        if row:
+            tags = [f"iter{channel['processing']['ITERATIONS']}_reg{format(channel['processing']['RLTV_REGULARIZATION'], '.10g')}"
+                    for channel in channels]
+            tag = tags[0] if len(set(tags)) == 1 else "_".join(
+                f"C{channel['index'] + 1}_{tag}" for channel, tag in zip(channels, tags))
+            stem += f"_deconvolved_{tag}"
+        metadata = {
+            "source": data["path"],
+            "view": "Deconvolved" if row else "Original",
+            "display_range": [0, 255],
+            "channels": [{"index": channel["index"], "name": channel["name"],
+                          "color": self.preferences.get(str(channel["index"]), {}).get("color", "Original"),
+                          "processing": channel.get("processing")} for channel in channels],
+        }
+        return image, f"{stem}_max_projection.png", metadata
+
+    def export_screenshot(self):
+        try:
+            snapshot = self.screenshot()
+            if snapshot is None:
+                return
+            image, filename, metadata = snapshot
+            path = filedialog.asksaveasfilename(
+                parent=self.winfo_toplevel(), title="Export screenshot", initialfile=filename,
+                initialdir=str(Path(self.data["path"]).parent), defaultextension=".png",
+                filetypes=(("PNG image", "*.png"),))
+            if not path:
+                return
+            info = PngInfo()
+            info.add_text("Preview", json.dumps(metadata))
+            image.save(path, format="PNG", pnginfo=info)
+            self.on_log(f"Saved screenshot: {path}\n")
+        except (OSError, ValueError, tk.TclError) as error:
+            self.on_error(str(error))
 
     def clear(self):
         self.generation += 1
