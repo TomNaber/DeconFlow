@@ -36,11 +36,14 @@ def main():
     from source.channel_metadata import read_channels
     from source.edit_ims_channels import NAMED_COLORS
     from source.psf_channels import read_psf_channels
+    from source.preview import Preview
 
     window = tk.Tk()
     window.title("Richardson-Lucy deconvolution and Gibson Lanni point-spread functions")
-    window.geometry("1100x950")
-    window.minsize(1050, 900)
+    width = min(1700, (window.winfo_screenwidth() or 1760) - 60)
+    height = min(1000, (window.winfo_screenheight() or 1100) - 100)
+    window.geometry(f"{width}x{height}")
+    window.minsize(min(1100, width), min(700, height))
     mode = tk.StringVar(value="Deconvolution")
     separate = tk.BooleanVar(value=False)
     fields = {}
@@ -48,7 +51,32 @@ def main():
     cancelled = False
     events = queue.Queue()
 
-    toolbar = ttk.Frame(window, padding=10)
+    workspace = ttk.Frame(window)
+    workspace.pack(fill="both", expand=True)
+    workspace.columnconfigure(0, weight=55, uniform="panels")
+    workspace.columnconfigure(1, weight=45, uniform="panels")
+    workspace.rowconfigure(0, weight=1)
+    settings_area = ttk.Frame(workspace)
+    settings_area.grid(row=0, column=0, sticky="nsew")
+    settings_area.rowconfigure(0, weight=1)
+    settings_area.columnconfigure(0, weight=1)
+    settings_canvas = tk.Canvas(settings_area, highlightthickness=0, width=1, height=1)
+    settings_canvas.grid(row=0, column=0, sticky="nsew")
+    vertical = ttk.Scrollbar(settings_area, orient="vertical", command=settings_canvas.yview)
+    vertical.grid(row=0, column=1, sticky="ns")
+    horizontal = ttk.Scrollbar(settings_area, orient="horizontal", command=settings_canvas.xview)
+    horizontal.grid(row=1, column=0, sticky="ew")
+    settings_canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+    controls = ttk.Frame(settings_canvas)
+    controls_item = settings_canvas.create_window(0, 0, window=controls, anchor="nw")
+
+    def layout_controls(event=None):
+        settings_canvas.itemconfigure(controls_item, width=max(controls.winfo_reqwidth(), settings_canvas.winfo_width()))
+        settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+
+    controls.bind("<Configure>", layout_controls)
+    settings_canvas.bind("<Configure>", layout_controls)
+    toolbar = ttk.Frame(controls, padding=10)
     toolbar.pack(fill="x")
     panels = {}
     mode_labels = {
@@ -58,7 +86,7 @@ def main():
     for title in mode_labels:
         ttk.Radiobutton(toolbar, text=mode_labels[title], variable=mode, value=title,
                         command=lambda: show_mode()).pack(side="left", padx=5)
-        panels[title] = ttk.Frame(window, padding=10)
+        panels[title] = ttk.Frame(controls, padding=10)
         fields[title] = {}
 
     def add_field(panel, group, row, name, label, default, kind=str, browse=None):
@@ -117,6 +145,13 @@ def main():
     psf_selections = {}
     refresh_job = None
 
+    def preview_error(error):
+        events.put(f"Preview: {error}\n")
+        messagebox.showerror("Cannot load preview", error.splitlines()[-1], parent=window)
+
+    preview = Preview(workspace, channel_preferences, lambda: refresh_channels(), preview_error)
+    preview.grid(row=0, column=1, sticky="nsew", padx=(4, 10), pady=10)
+
     def refresh_channels():
         nonlocal active_channels, refresh_job, psf_signature
         refresh_job = None
@@ -127,12 +162,12 @@ def main():
         active_channels = []
         folder = Path(fields["Deconvolution"]["INPUT_DIR"][0].get()).expanduser()
         try:
-            files = sorted(folder.glob("*.ims")) if folder.is_dir() else []
-            if not files:
+            preview.set_folder(folder)
+            if preview.selected_path is None:
                 raise ValueError("No .ims files in the selected input folder.")
-            active_channels = read_channels(files[0])
+            active_channels = read_channels(preview.selected_path)
             if not active_channels:
-                raise ValueError("No channels found in the first input file.")
+                raise ValueError("No channels found in the selected input file.")
         except (OSError, KeyError, ValueError) as error:
             ttk.Label(channel_panel, text=str(error), wraplength=950).grid(row=0, column=0, columnspan=4, sticky="w")
             return
@@ -160,15 +195,15 @@ def main():
             name = tk.StringVar(value=preference["name"])
             color = tk.StringVar(value=preference["color"])
             label = f"C{channel['index'] + 1}: {channel['name']}"
-            ttk.Label(channel_panel, text=label).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-            ttk.Entry(channel_panel, textvariable=name).grid(row=row, column=1, sticky="ew", padx=5, pady=3)
+            ttk.Label(channel_panel, text=label, wraplength=170).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            ttk.Entry(channel_panel, textvariable=name, width=18).grid(row=row, column=1, sticky="ew", padx=5, pady=3)
             selected_file = psf_overrides.get(key, automatic.get(key))
             if key in psf_overrides and selected_file == automatic.get(key):
                 del psf_overrides[key]
             psf = tk.StringVar(value=labels.get(selected_file, f"Unavailable: {selected_file}" if selected_file else "No matching PSF"))
             psf_selections[key] = selected_file if selected_file in labels else None
             ttk.Combobox(channel_panel, textvariable=psf, values=tuple(labels.values()),
-                         state="readonly", width=22).grid(row=row, column=2, padx=5, pady=3)
+                         state="readonly", width=16).grid(row=row, column=2, padx=5, pady=3)
             ttk.Combobox(channel_panel, textvariable=color, values=("Original", *NAMED_COLORS),
                          state="readonly", width=14).grid(row=row, column=3, padx=5, pady=3)
 
@@ -188,6 +223,7 @@ def main():
             def changed(*args, key=key, name=name, color=color):
                 channel_preferences[key] = {"name": name.get(), "color": color.get()}
                 save_settings()
+                preview.recolor()
 
             name.trace_add("write", changed)
             color.trace_add("write", changed)
@@ -318,6 +354,7 @@ def main():
             channel_preferences.clear()
             psf_overrides.clear()
             refresh_channels()
+            preview.recolor()
         saving_paused = False
         save_settings()
 
@@ -429,6 +466,7 @@ def main():
                     settings["CHANNELS"].append(dict(name=parts[0], excitation_nm=excitation, emission_nm=emission))
                 if not settings["CHANNELS"]:
                     raise ValueError("Enter at least one channel.")
+            preview.clear()
             process = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--worker"],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        text=True, encoding="utf-8", errors="replace", cwd=ROOT,
@@ -439,6 +477,7 @@ def main():
             messagebox.showerror("Cannot start", str(error), parent=window)
             return
         run_button.configure(state="disabled")
+        preview.set_disabled(True)
         cancelled = False
         cancel_button.configure(state="normal")
         events.put(f"\nStarting {mode_labels[group]}...\n")
@@ -483,6 +522,7 @@ def main():
                 process = None
                 run_button.configure(state="normal")
                 cancel_button.configure(state="disabled")
+                preview.set_disabled(False)
                 refresh_channels()
             console.configure(state="normal")
             console.insert("end", item)
@@ -494,17 +534,18 @@ def main():
         if process is not None:
             messagebox.showinfo("Job running", "Cancel the current job or wait for it to finish before closing.", parent=window)
         else:
+            preview.close()
             window.destroy()
 
-    buttons = ttk.Frame(window)
+    buttons = ttk.Frame(controls)
     buttons.pack(fill="x", padx=10, pady=5)
     run_button = ttk.Button(buttons, text="Run", command=start)
     run_button.pack(side="left")
     cancel_button = ttk.Button(buttons, text="Cancel", command=cancel, state="disabled")
     cancel_button.pack(side="left", padx=5)
     ttk.Button(buttons, text="Restore defaults", command=restore_defaults).pack(side="right")
-    ttk.Label(window, text="Console").pack(anchor="w", padx=10)
-    console = ScrolledText(window, height=12, state="disabled", wrap="word")
+    ttk.Label(controls, text="Console").pack(anchor="w", padx=10)
+    console = ScrolledText(controls, width=40, height=12, state="disabled", wrap="word")
     console.pack(fill="both", expand=True, padx=10, pady=(5, 10))
     show_actual()
     show_mode()
