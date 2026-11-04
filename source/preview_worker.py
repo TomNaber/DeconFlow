@@ -40,13 +40,6 @@ def load_volume(path):
                 np.nan_to_num(volume, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
             attrs = handle[f"DataSetInfo/Channel {index}"].attrs
             try:
-                limits = tuple(float(value) for value in text(attrs.get("ColorRange", "")).split())
-                if len(limits) != 2 or not all(np.isfinite(limits)) or limits[1] <= limits[0]:
-                    raise ValueError()
-            except ValueError:
-                low, high = float(volume.min()), float(volume.max())
-                limits = (low, high if high > low else low + 1)
-            try:
                 color = tuple(float(value) for value in text(attrs.get("Color", "1 1 1")).split())
                 if len(color) != 3 or not all(np.isfinite(color)):
                     raise ValueError()
@@ -58,7 +51,7 @@ def load_volume(path):
                 **channel,
                 "xy": volume.max(axis=0),
                 "yz": volume.max(axis=2).T,
-                "range": limits,
+                "range": (0.0, 255.0),
                 "color": color,
             })
     return volumes, {"path": str(path), "shape": shape, "spacing": spacing, "channels": projections}
