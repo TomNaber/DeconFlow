@@ -1,3 +1,8 @@
+from contextlib import redirect_stdout, redirect_stderr
+import os
+from pathlib import Path
+import signal
+import sys
 import traceback
 
 import h5py
@@ -59,12 +64,73 @@ def load_volume(path):
     return volumes, {"path": str(path), "shape": shape, "spacing": spacing, "channels": projections}
 
 
+class Log:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def write(self, value):
+        if value:
+            self.connection.send(("log", value))
+        return len(value)
+
+    def flush(self):
+        pass
+
+
+def deconvolve_volume(volumes, original, settings, directory):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import batch_deconvolve_ims as batch
+
+    for name, value in settings.items():
+        if isinstance(getattr(batch, name), Path):
+            value = Path(value).expanduser()
+        setattr(batch, name, value)
+    batch.TEMP_DIR = Path(directory)
+    if not batch.FIJI_EXECUTABLE.is_file():
+        raise FileNotFoundError(batch.FIJI_EXECUTABLE)
+    channels, psfs = batch.load_psfs()
+    if len(psfs) != len(volumes):
+        raise ValueError("Select one PSF for each loaded channel.")
+    output = []
+    projections = []
+    for volume, channel, psf in zip(volumes, original["channels"], psfs):
+        image = np.array(volume, dtype=np.float32, copy=True, order="C")
+        np.nan_to_num(image, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.maximum(image, 0.0, out=image)
+        result = batch.run_fiji(image, psf, f"Preview C{channel['index'] + 1} {channel['name']}")
+        if result.size != volume.size:
+            raise ValueError("Deconvolution returned an unexpected image size.")
+        stored = batch.store_result(result.reshape(volume.shape))
+        output.append(stored)
+        projections.append({**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T})
+        del image, result
+    return output, {**original, "channels": projections, "settings": settings}
+
+
 def run(connection, path):
+    os.setsid()
+
+    def stop(signum, frame):
+        raise SystemExit(130)
+
+    signal.signal(signal.SIGTERM, stop)
     try:
         volumes, projection = load_volume(path)
         connection.send(("loaded", projection))
-        while connection.recv() != "close":
-            pass
+        output = None
+        while True:
+            request = connection.recv()
+            if request == "close":
+                break
+            revision, settings, directory = request
+            try:
+                output = None
+                with redirect_stdout(Log(connection)), redirect_stderr(Log(connection)):
+                    output, result = deconvolve_volume(volumes, projection, settings, directory)
+                connection.send(("deconvolved", (revision, result)))
+                del result
+            except Exception:
+                connection.send(("failed", (revision, traceback.format_exc())))
     except (EOFError, BrokenPipeError):
         pass
     except Exception:

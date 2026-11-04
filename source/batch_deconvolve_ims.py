@@ -201,6 +201,12 @@ def run_fiji(image, psf, label):
     return np.ascontiguousarray(result)
 
 
+def store_result(result):
+    np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.maximum(result, 0.0, out=result)
+    return np.clip(np.rint(result), 0, 65535).astype(np.uint16)
+
+
 def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
     channel_maxima = [0] * n_channels
     for time_index in range(n_timepoints):
@@ -213,12 +219,10 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
             print(f"    {label}")
             image = read_volume(reader, time_index, channel_index)
             result = run_fiji(image, psfs[channel_index], label)
-            np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-            np.maximum(result, 0.0, out=result)
+            stored = store_result(result)
 
             float_min, float_max = float(result.min()), float(result.max())
             saturated = int(np.count_nonzero(result > 65535))
-            stored = np.clip(np.rint(result), 0, 65535).astype(np.uint16)
             stored_min, stored_max = int(stored.min()), int(stored.max())
             channel_maxima[channel_index] = max(
                 channel_maxima[channel_index], stored_max

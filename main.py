@@ -147,10 +147,41 @@ def main():
 
     def preview_error(error):
         events.put(f"Preview: {error}\n")
-        messagebox.showerror("Cannot load preview", error.splitlines()[-1], parent=window)
+        messagebox.showerror("Preview failed", error.splitlines()[-1], parent=window)
 
     preview = Preview(workspace, channel_preferences, lambda: refresh_channels(), preview_error)
     preview.grid(row=0, column=1, sticky="nsew", padx=(4, 10), pady=10)
+
+    def preview_settings():
+        if refresh_job is not None:
+            window.after_cancel(refresh_job)
+            refresh_channels()
+        settings = {}
+        for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT",
+                     "FIJI_EXECUTABLE", "FIJI_MEMORY", "PSF_DIR", "TEMP_DIR"):
+            variable, kind, label = fields["Deconvolution"][name]
+            try:
+                value = kind(variable.get())
+                if kind is str:
+                    value = value.strip()
+                    if not value:
+                        raise ValueError()
+                if kind in (int, float) and (not math.isfinite(value) or value < 0
+                        or (name == "ITERATIONS" and value == 0)):
+                    raise ValueError()
+            except (ValueError, tk.TclError):
+                raise ValueError(f"Enter a valid value for {label}.") from None
+            settings[name] = value
+        settings["PSF_FILES"] = []
+        for channel in active_channels:
+            filename = psf_selections.get(str(channel["index"]))
+            if not filename:
+                raise ValueError(f"Select an available PSF for C{channel['index'] + 1}.")
+            settings["PSF_FILES"].append(filename)
+        return settings
+
+    preview.get_settings = preview_settings
+    preview.on_log = events.put
 
     def refresh_channels():
         nonlocal active_channels, refresh_job, psf_signature
@@ -170,6 +201,7 @@ def main():
                 raise ValueError("No channels found in the selected input file.")
         except (OSError, KeyError, ValueError) as error:
             ttk.Label(channel_panel, text=str(error), wraplength=950).grid(row=0, column=0, columnspan=4, sticky="w")
+            preview.parameters_changed()
             return
         signature = [channel["name"] for channel in active_channels]
         if signature != psf_signature:
@@ -215,6 +247,7 @@ def main():
                 else:
                     psf_overrides[key] = filename
                 save_settings()
+                preview.parameters_changed()
 
             psf.trace_add("write", psf_changed)
             # Keep the Tk variable alive for the lifetime of its dropdown.
@@ -231,9 +264,11 @@ def main():
             ttk.Label(channel_panel, text=psf_error, wraplength=950).grid(
                 row=len(active_channels) + 1, column=0, columnspan=4, sticky="w")
         save_settings()
+        preview.parameters_changed()
 
     def schedule_channel_refresh(*args):
         nonlocal refresh_job
+        preview.parameters_changed()
         if refresh_job is not None:
             window.after_cancel(refresh_job)
         refresh_job = window.after(300, refresh_channels)
@@ -405,6 +440,8 @@ def main():
     channels.bind("<<Modified>>", channels_changed)
     fields["Deconvolution"]["INPUT_DIR"][0].trace_add("write", schedule_channel_refresh)
     fields["Deconvolution"]["PSF_DIR"][0].trace_add("write", schedule_channel_refresh)
+    for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_EXECUTABLE", "FIJI_MEMORY"):
+        fields["Deconvolution"][name][0].trace_add("write", preview.parameters_changed)
     refresh_channels()
     save_settings()
 
@@ -486,6 +523,9 @@ def main():
     def cancel():
         nonlocal cancelled
         if process is None or process.poll() is not None:
+            if preview.busy is not None:
+                preview.clear()
+                events.put("\nPreview cancelled.\n")
             return
         cancelled = True
         cancel_button.configure(state="disabled")
@@ -543,6 +583,8 @@ def main():
     run_button.pack(side="left")
     cancel_button = ttk.Button(buttons, text="Cancel", command=cancel, state="disabled")
     cancel_button.pack(side="left", padx=5)
+    preview.on_activity = lambda: cancel_button.configure(
+        state="normal" if (process is not None and not cancelled) or preview.busy is not None else "disabled")
     ttk.Button(buttons, text="Restore defaults", command=restore_defaults).pack(side="right")
     ttk.Label(controls, text="Console").pack(anchor="w", padx=10)
     console = ScrolledText(controls, width=40, height=12, state="disabled", wrap="word")
