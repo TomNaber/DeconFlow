@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import queue
 import signal
+import sys
 from tempfile import TemporaryDirectory
 import threading
 import tkinter as tk
@@ -15,6 +16,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
+from source.preview_gestures import install_pinch
 
 
 def composite(channels, axis, preferences):
@@ -56,6 +58,11 @@ class Preview(ttk.LabelFrame):
         self.sync = tk.BooleanVar(value=False)
         self.images = {}
         self.photos = {}
+        self.zoom = tk.DoubleVar(value=100)
+        self.zoom_label = tk.StringVar(value="100%")
+        self.center = dict.fromkeys("xyz", 0.0)
+        self.drag = None
+        self.draw_job = None
         self.disabled = False
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(0, 8))
@@ -74,6 +81,14 @@ class Preview(ttk.LabelFrame):
         self.sync_button.pack(side="left", padx=8)
         self.export_button = ttk.Button(actions, text="Export screenshot", command=self.export_screenshot, state="disabled")
         self.export_button.pack(side="right")
+        zoom_bar = ttk.Frame(self)
+        zoom_bar.pack(side="bottom", fill="x", pady=(8, 0))
+        ttk.Label(zoom_bar, text="Zoom").pack(side="left")
+        self.zoom_slider = ttk.Scale(zoom_bar, from_=10, to=1600, variable=self.zoom, command=self.slider_zoom)
+        self.zoom_slider.pack(side="left", fill="x", expand=True, padx=8)
+        self.reset_button = ttk.Button(zoom_bar, text="Reset", command=self.reset_zoom, state="disabled")
+        self.reset_button.pack(side="right", padx=(8, 0))
+        ttk.Label(zoom_bar, textvariable=self.zoom_label, width=6, anchor="e").pack(side="right")
         self.views = ttk.Frame(self)
         self.views.pack(fill="both", expand=True)
         self.views.columnconfigure(0, weight=3)
@@ -87,7 +102,15 @@ class Preview(ttk.LabelFrame):
                 canvas = tk.Canvas(self.views, width=1, height=1, highlightthickness=0, background="#242424")
                 canvas.grid(row=base + 1, column=column, sticky="nsew", padx=2, pady=2)
                 canvas.bind("<Configure>", lambda event: self.draw())
+                key = row, axis
+                canvas.bind("<MouseWheel>", lambda event, key=key: self.wheel_zoom(event, key))
+                canvas.bind("<Button-4>", lambda event, key=key: self.wheel_zoom(event, key))
+                canvas.bind("<Button-5>", lambda event, key=key: self.wheel_zoom(event, key))
+                canvas.bind("<ButtonPress-1>", lambda event, key=key: self.start_pan(event, key))
+                canvas.bind("<B1-Motion>", self.pan)
+                canvas.bind("<ButtonRelease-1>", self.end_pan)
                 self.canvases[row, axis] = canvas
+        self.remove_pinch = install_pinch(self, self.pinch)
         self.poll_job = self.after(50, self.poll)
 
     @property
@@ -132,6 +155,8 @@ class Preview(ttk.LabelFrame):
         self.files.configure(state="disabled" if disabled else "readonly")
         self.load_button.configure(state="normal" if self.selected_path and not disabled and self.busy != "load" else "disabled")
         self.sync_button.configure(state="disabled" if disabled else "normal")
+        self.zoom_slider.configure(state="normal" if self.data is not None and not disabled else "disabled")
+        self.reset_button.configure(state="normal" if self.data is not None and not disabled else "disabled")
         for widget in self.channel_bar.winfo_children():
             widget.configure(state="disabled" if disabled else "normal")
         ready = self.matches_loaded() and self.selected_channels and not disabled and self.busy is None and not self.sync.get()
@@ -251,6 +276,7 @@ class Preview(ttk.LabelFrame):
                 elif kind == "loaded":
                     self.busy = None
                     self.data = value
+                    self.reset_view()
                     self.build_channels()
                     z, y, x = self.data["shape"]
                     dz, dy, dx = self.data["spacing"]
@@ -297,30 +323,113 @@ class Preview(ttk.LabelFrame):
                         self.images[row, axis] = composite(channels, axis, self.preferences)
             self.draw()
 
-    def render_views(self):
+    def reset_zoom(self):
+        self.end_pan()
+        self.reset_view()
+        self.draw()
+
+    def reset_view(self):
+        self.zoom.set(100)
+        self.zoom_label.set("100%")
+        self.drag = None
+        self.center = dict.fromkeys("xyz", 0.0)
+        if self.data is not None:
+            self.center = {axis: size * spacing / 2 for axis, size, spacing
+                           in zip("zyx", self.data["shape"], self.data["spacing"])}
+
+    def view_scale(self):
         if self.data is None:
-            return {}
+            return 0
         z, y, x = self.data["shape"]
         dz, dy, dx = self.data["spacing"]
         widths = {"xy": x * dx, "yz": z * dz}
         height = y * dy
-        scale = min(
+        fit = min(
             min((canvas.winfo_width() - 8) / widths[axis], (canvas.winfo_height() - 8) / height)
             for (row, axis), canvas in self.canvases.items()
         )
+        return max(0, fit) * self.zoom.get() / 100
+
+    def slider_zoom(self, value):
+        self.zoom_label.set(f"{self.zoom.get():.0f}%")
+        self.schedule_draw()
+
+    def set_zoom(self, value, key=None, x=None, y=None):
+        if self.data is None or self.disabled:
+            return
+        old_scale = self.view_scale()
+        self.zoom.set(min(1600, max(10, value)))
+        new_scale = self.view_scale()
+        if key is not None and old_scale > 0 and new_scale > 0:
+            canvas = self.canvases[key]
+            horizontal = "x" if key[1] == "xy" else "z"
+            self.center[horizontal] += (x - canvas.winfo_width() / 2) * (1 / old_scale - 1 / new_scale)
+            self.center["y"] += (y - canvas.winfo_height() / 2) * (1 / old_scale - 1 / new_scale)
+        self.zoom_label.set(f"{self.zoom.get():.0f}%")
+        self.schedule_draw()
+
+    def wheel_zoom(self, event, key):
+        if event.num in (4, 5):
+            steps = 1 if event.num == 4 else -1
+        else:
+            steps = event.delta if sys.platform == "darwin" else event.delta / 120
+        self.set_zoom(self.zoom.get() * 1.1 ** max(-10, min(10, steps)), key, event.x, event.y)
+        return "break"
+
+    def pinch(self, target, x, y, amount):
+        if self.data is None or self.disabled:
+            return False
+        for key, canvas in self.canvases.items():
+            if target is canvas:
+                self.set_zoom(self.zoom.get() * max(0.01, 1 + amount), key,
+                              x - canvas.winfo_rootx(), y - canvas.winfo_rooty())
+                return True
+        return False
+
+    def start_pan(self, event, key):
+        if self.data is not None and not self.disabled:
+            self.drag = key, event.x, event.y, dict(self.center)
+            self.canvases[key].configure(cursor="fleur")
+
+    def pan(self, event):
+        scale = self.view_scale()
+        if self.drag is not None and scale > 0:
+            key, x, y, center = self.drag
+            horizontal = "x" if key[1] == "xy" else "z"
+            self.center[horizontal] = center[horizontal] - (event.x - x) / scale
+            self.center["y"] = center["y"] - (event.y - y) / scale
+            self.schedule_draw()
+
+    def end_pan(self, event=None):
+        if self.drag is not None:
+            self.canvases[self.drag[0]].configure(cursor="")
+            self.drag = None
+
+    def schedule_draw(self):
+        if self.draw_job is None:
+            self.draw_job = self.after_idle(self.draw)
+
+    def render_views(self):
+        scale = self.view_scale()
         if scale <= 0:
             return {}
+        dz, dy, dx = self.data["spacing"]
         rendered = {}
         for (row, axis), image in self.images.items():
             canvas = self.canvases[row, axis]
-            size = max(1, round(widths[axis] * scale)), max(1, round(height * scale))
-            frame = Image.new("RGB", (canvas.winfo_width(), canvas.winfo_height()), canvas.cget("background"))
-            frame.paste(image.resize(size, Image.Resampling.BILINEAR),
-                        ((frame.width - size[0]) // 2, (frame.height - size[1]) // 2))
-            rendered[row, axis] = frame
+            width, height = canvas.winfo_width(), canvas.winfo_height()
+            horizontal = "x" if axis == "xy" else "z"
+            spacing = dx if axis == "xy" else dz
+            transform = (1 / (scale * spacing), 0, (self.center[horizontal] - width / (2 * scale)) / spacing,
+                         0, 1 / (scale * dy), (self.center["y"] - height / (2 * scale)) / dy)
+            rendered[row, axis] = image.transform((width, height), Image.Transform.AFFINE, transform,
+                                                  Image.Resampling.BILINEAR, fillcolor=canvas.cget("background"))
         return rendered
 
     def draw(self):
+        if self.draw_job is not None:
+            self.after_cancel(self.draw_job)
+            self.draw_job = None
         for key, image in self.render_views().items():
             canvas = self.canvases[key]
             self.photos[key] = ImageTk.PhotoImage(image, master=self)
@@ -355,6 +464,8 @@ class Preview(ttk.LabelFrame):
             "source": data["path"],
             "view": "Deconvolved" if row else "Original",
             "display_range": [0, 255],
+            "zoom_percent": self.zoom.get(),
+            "center_xyz": dict(self.center),
             "channels": [{"index": channel["index"], "name": channel["name"],
                           "color": self.preferences.get(str(channel["index"]), {}).get("color", "Original"),
                           "processing": channel.get("processing")} for channel in channels],
@@ -418,6 +529,8 @@ class Preview(ttk.LabelFrame):
                 break
         self.data = None
         self.deconvolved = None
+        self.end_pan()
+        self.reset_view()
         self.build_channels()
         self.busy = None
         self.cleanup_job()
@@ -428,5 +541,9 @@ class Preview(ttk.LabelFrame):
         self.set_disabled(self.disabled)
 
     def close(self):
+        self.remove_pinch()
+        if self.draw_job is not None:
+            self.after_cancel(self.draw_job)
+            self.draw_job = None
         self.after_cancel(self.poll_job)
         self.clear()
