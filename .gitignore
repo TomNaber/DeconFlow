@@ -3,6 +3,8 @@
 .vscode/*
 Comparison photos/*
 dcv/*
+channel-edited/*
 psfs/*
 examples/*
 *__pycache__
+input/*
