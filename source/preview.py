@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from source.edit_ims_channels import NAMED_COLORS
-from source.preview_worker import run
+from source.preview_worker import channel_settings, run
 
 
 def composite(channels, axis, preferences):
@@ -44,6 +44,7 @@ class Preview(ttk.LabelFrame):
         self.events = queue.Queue()
         self.data = None
         self.deconvolved = None
+        self.channel_variables = {}
         self.busy = None
         self.revision = 0
         self.pending = None
@@ -61,6 +62,8 @@ class Preview(ttk.LabelFrame):
         self.files.bind("<<ComboboxSelected>>", lambda event: self.on_select())
         self.load_button = ttk.Button(toolbar, text="Load", command=self.load, state="disabled")
         self.load_button.pack(side="left", padx=(6, 0))
+        self.channel_bar = ttk.Frame(self)
+        self.channel_bar.pack(fill="x", pady=(0, 4))
         actions = ttk.Frame(self)
         actions.pack(side="bottom", fill="x", pady=(8, 0))
         self.deconvolve_button = ttk.Button(actions, text="Deconvolve preview", command=self.deconvolve, state="disabled")
@@ -87,6 +90,27 @@ class Preview(ttk.LabelFrame):
     def selected_path(self):
         return self.folder / self.filename.get() if self.folder and self.filename.get() else None
 
+    @property
+    def selected_channels(self):
+        return [index for index, variable in self.channel_variables.items() if variable.get()]
+
+    def build_channels(self):
+        for widget in self.channel_bar.winfo_children():
+            widget.destroy()
+        self.channel_variables.clear()
+        if self.data is not None:
+            for position, channel in enumerate(self.data["channels"]):
+                index = channel["index"]
+                variable = tk.BooleanVar(value=True)
+                self.channel_variables[index] = variable
+                ttk.Checkbutton(self.channel_bar, text=f"C{index + 1}: {channel['name']}",
+                                variable=variable, command=self.channels_changed).grid(
+                                    row=position // 3, column=position % 3, sticky="w", padx=(0, 8))
+
+    def channels_changed(self):
+        self.recolor()
+        self.sync_changed()
+
     def set_folder(self, folder):
         self.folder = Path(folder).expanduser()
         names = [path.name for path in sorted(self.folder.glob("*.ims")) if path.is_file()] if self.folder.is_dir() else []
@@ -104,7 +128,9 @@ class Preview(ttk.LabelFrame):
         self.files.configure(state="disabled" if disabled else "readonly")
         self.load_button.configure(state="normal" if self.selected_path and not disabled and self.busy != "load" else "disabled")
         self.sync_button.configure(state="disabled" if disabled else "normal")
-        ready = self.matches_loaded() and not disabled and self.busy is None and not self.sync.get()
+        for widget in self.channel_bar.winfo_children():
+            widget.configure(state="disabled" if disabled else "normal")
+        ready = self.matches_loaded() and self.selected_channels and not disabled and self.busy is None and not self.sync.get()
         self.deconvolve_button.configure(state="normal" if ready else "disabled")
         self.on_activity()
 
@@ -122,12 +148,12 @@ class Preview(ttk.LabelFrame):
             self.after_cancel(self.sync_job)
             self.sync_job = None
         self.update_controls()
-        if self.sync.get() and self.matches_loaded() and not self.disabled:
+        if self.sync.get() and self.matches_loaded() and self.selected_channels and not self.disabled:
             self.sync_job = self.after(500, lambda: self.deconvolve(automatic=True))
 
     def deconvolve(self, automatic=False):
         self.sync_job = None
-        if self.disabled or not self.matches_loaded() or self.get_settings is None:
+        if self.disabled or not self.matches_loaded() or not self.selected_channels or self.get_settings is None:
             return
         try:
             settings = self.get_settings()
@@ -141,13 +167,16 @@ class Preview(ttk.LabelFrame):
         if not self.matches_loaded():
             return
         if automatic:
-            processing = {key: value for key, value in settings.items() if key != "TEMP_DIR"}
+            processing = {index: channel_settings(settings, index) for index in self.selected_channels}
             if self.deconvolved is not None:
-                previous = {key: value for key, value in self.deconvolved["settings"].items() if key != "TEMP_DIR"}
-                if processing == previous:
+                previous = {channel["index"]: channel["processing"] for channel in self.deconvolved["channels"]}
+                if all(previous.get(index) == value for index, value in processing.items()):
                     return
-            if self.running == (self.revision, settings):
-                return
+            if self.running is not None and self.running[0] == self.revision:
+                running = self.running[1]
+                if all(index in running["CHANNEL_INDICES"] and channel_settings(running, index) == value
+                       for index, value in processing.items()):
+                    return
         self.pending = (self.revision, settings)
         self.start_pending()
 
@@ -217,6 +246,7 @@ class Preview(ttk.LabelFrame):
                 elif kind == "loaded":
                     self.busy = None
                     self.data = value
+                    self.build_channels()
                     z, y, x = self.data["shape"]
                     dz, dy, dx = self.data["spacing"]
                     self.views.columnconfigure(0, weight=max(1, round(1000 * x * dx / (x * dx + z * dz))))
@@ -230,6 +260,9 @@ class Preview(ttk.LabelFrame):
                     revision, result = value
                     if revision == self.revision and self.matches_loaded():
                         if kind == "deconvolved":
+                            cached = {channel["index"]: channel for channel in self.deconvolved["channels"]} if self.deconvolved else {}
+                            cached.update({channel["index"]: channel for channel in result["channels"]})
+                            result["channels"] = [cached[index] for index in sorted(cached)]
                             self.deconvolved = result
                             self.recolor()
                             self.on_log("Preview finished.\n")
@@ -246,11 +279,17 @@ class Preview(ttk.LabelFrame):
 
     def recolor(self):
         if self.data is not None:
-            self.images = {
-                (row, axis): composite(data["channels"], axis, self.preferences)
-                for row, data in enumerate((self.data, self.deconvolved)) if data is not None
-                for axis in ("xy", "yz")
-            }
+            self.images.clear()
+            self.photos.clear()
+            for canvas in self.canvases.values():
+                canvas.delete("all")
+            for row, data in enumerate((self.data, self.deconvolved)):
+                if data is None:
+                    continue
+                channels = [channel for channel in data["channels"] if channel["index"] in self.selected_channels]
+                if channels:
+                    for axis in ("xy", "yz"):
+                        self.images[row, axis] = composite(channels, axis, self.preferences)
             self.draw()
 
     def draw(self):
@@ -311,6 +350,7 @@ class Preview(ttk.LabelFrame):
                 break
         self.data = None
         self.deconvolved = None
+        self.build_channels()
         self.busy = None
         self.cleanup_job()
         self.images.clear()

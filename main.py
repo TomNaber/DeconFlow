@@ -173,11 +173,15 @@ def main():
                 raise ValueError(f"Enter a valid value for {label}.") from None
             settings[name] = value
         settings["PSF_FILES"] = []
+        settings["CHANNEL_INDICES"] = []
         for channel in active_channels:
+            if channel["index"] not in preview.selected_channels:
+                continue
             filename = psf_selections.get(str(channel["index"]))
             if not filename:
                 raise ValueError(f"Select an available PSF for C{channel['index'] + 1}.")
             settings["PSF_FILES"].append(filename)
+            settings["CHANNEL_INDICES"].append(channel["index"])
         return settings
 
     preview.get_settings = preview_settings

@@ -77,11 +77,21 @@ class Log:
         pass
 
 
+def channel_settings(settings, index):
+    indices = settings.get("CHANNEL_INDICES", list(range(len(settings["PSF_FILES"]))))
+    return {
+        **{key: value for key, value in settings.items() if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES")},
+        "PSF_FILE": dict(zip(indices, settings["PSF_FILES"]))[index],
+    }
+
+
 def deconvolve_volume(volumes, original, settings, directory):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import batch_deconvolve_ims as batch
 
     for name, value in settings.items():
+        if name == "CHANNEL_INDICES":
+            continue
         if isinstance(getattr(batch, name), Path):
             value = Path(value).expanduser()
         setattr(batch, name, value)
@@ -89,11 +99,14 @@ def deconvolve_volume(volumes, original, settings, directory):
     if not batch.FIJI_EXECUTABLE.is_file():
         raise FileNotFoundError(batch.FIJI_EXECUTABLE)
     channels, psfs = batch.load_psfs()
-    if len(psfs) != len(volumes):
-        raise ValueError("Select one PSF for each loaded channel.")
+    selected = settings.get("CHANNEL_INDICES", [channel["index"] for channel in original["channels"]])
+    if not selected or len(psfs) != len(selected):
+        raise ValueError("Select one PSF for each selected channel.")
+    loaded = {channel["index"]: (volume, channel) for volume, channel in zip(volumes, original["channels"])}
     output = []
     projections = []
-    for volume, channel, psf in zip(volumes, original["channels"], psfs):
+    for index, psf in zip(selected, psfs):
+        volume, channel = loaded[index]
         image = np.array(volume, dtype=np.float32, copy=True, order="C")
         np.nan_to_num(image, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.maximum(image, 0.0, out=image)
@@ -102,7 +115,8 @@ def deconvolve_volume(volumes, original, settings, directory):
             raise ValueError("Deconvolution returned an unexpected image size.")
         stored = batch.store_result(result.reshape(volume.shape))
         output.append(stored)
-        projections.append({**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T})
+        projections.append({**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T,
+                            "processing": channel_settings(settings, index)})
         del image, result
     return output, {**original, "channels": projections, "settings": settings}
 
@@ -117,18 +131,18 @@ def run(connection, path):
     try:
         volumes, projection = load_volume(path)
         connection.send(("loaded", projection))
-        output = None
+        output = {}
         while True:
             request = connection.recv()
             if request == "close":
                 break
             revision, settings, directory = request
             try:
-                output = None
                 with redirect_stdout(Log(connection)), redirect_stderr(Log(connection)):
-                    output, result = deconvolve_volume(volumes, projection, settings, directory)
+                    processed, result = deconvolve_volume(volumes, projection, settings, directory)
+                output.update({channel["index"]: volume for channel, volume in zip(result["channels"], processed)})
                 connection.send(("deconvolved", (revision, result)))
-                del result
+                del result, processed
             except Exception:
                 connection.send(("failed", (revision, traceback.format_exc())))
     except (EOFError, BrokenPipeError):
