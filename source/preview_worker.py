@@ -83,7 +83,7 @@ def deconvolve_volume(volumes, original, settings, directory):
     import batch_deconvolve_ims as batch
 
     for name, value in settings.items():
-        if name == "CHANNEL_INDICES":
+        if name in ("CHANNEL_INDICES", "CROP_BOUNDS"):
             continue
         if isinstance(getattr(batch, name), Path):
             value = Path(value).expanduser()
@@ -96,10 +96,17 @@ def deconvolve_volume(volumes, original, settings, directory):
     if not selected or len(psfs) != len(selected):
         raise ValueError("Select one PSF for each selected channel.")
     loaded = {channel["index"]: (volume, channel) for volume, channel in zip(volumes, original["channels"])}
+    bounds = settings.get("CROP_BOUNDS", {axis: [0, size] for axis, size in zip("zyx", original["shape"])})
+    for axis, size in zip("zyx", original["shape"]):
+        low, high = bounds[axis]
+        if not isinstance(low, int) or not isinstance(high, int) or not 0 <= low < high <= size:
+            raise ValueError(f"Invalid {axis.upper()} crop bounds.")
+    slices = tuple(slice(*bounds[axis]) for axis in "zyx")
     output = []
     projections = []
     for index, psf in zip(selected, psfs):
         volume, channel = loaded[index]
+        volume = volume[slices]
         image = np.array(volume, dtype=np.float32, copy=True, order="C")
         np.nan_to_num(image, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.maximum(image, 0.0, out=image)
@@ -111,7 +118,7 @@ def deconvolve_volume(volumes, original, settings, directory):
         projections.append({**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T,
                             "processing": channel_settings(settings, index)})
         del image, result
-    return output, {**original, "channels": projections, "settings": settings}
+    return output, {**original, "channels": projections, "settings": settings, "crop": bounds}
 
 
 def run(connection, path):
@@ -129,6 +136,9 @@ def run(connection, path):
             request = connection.recv()
             if request == "close":
                 break
+            if request == "clear_result":
+                output.clear()
+                continue
             revision, settings, directory = request
             try:
                 with redirect_stdout(Log(connection)), redirect_stderr(Log(connection)):

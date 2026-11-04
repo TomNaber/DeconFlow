@@ -62,6 +62,8 @@ class Preview(ttk.LabelFrame):
         self.zoom_label = tk.StringVar(value="100%")
         self.center = dict.fromkeys("xyz", 0.0)
         self.drag = None
+        self.crop = None
+        self.crop_drag = None
         self.draw_job = None
         self.disabled = False
         toolbar = ttk.Frame(self)
@@ -106,9 +108,10 @@ class Preview(ttk.LabelFrame):
                 canvas.bind("<MouseWheel>", lambda event, key=key: self.wheel_zoom(event, key))
                 canvas.bind("<Button-4>", lambda event, key=key: self.wheel_zoom(event, key))
                 canvas.bind("<Button-5>", lambda event, key=key: self.wheel_zoom(event, key))
-                canvas.bind("<ButtonPress-1>", lambda event, key=key: self.start_pan(event, key))
-                canvas.bind("<B1-Motion>", self.pan)
-                canvas.bind("<ButtonRelease-1>", self.end_pan)
+                canvas.bind("<ButtonPress-1>", lambda event, key=key: self.start_drag(event, key))
+                canvas.bind("<B1-Motion>", self.drag_motion)
+                canvas.bind("<ButtonRelease-1>", self.end_drag)
+                canvas.bind("<Motion>", lambda event, key=key: self.crop_cursor(event, key))
                 self.canvases[row, axis] = canvas
         self.remove_pinch = install_pinch(self, self.pinch)
         self.poll_job = self.after(50, self.poll)
@@ -159,7 +162,8 @@ class Preview(ttk.LabelFrame):
         self.reset_button.configure(state="normal" if self.data is not None and not disabled else "disabled")
         for widget in self.channel_bar.winfo_children():
             widget.configure(state="disabled" if disabled else "normal")
-        ready = self.matches_loaded() and self.selected_channels and not disabled and self.busy is None and not self.sync.get()
+        ready = (self.matches_loaded() and self.selected_channels and not disabled and self.busy is None
+                 and self.crop_drag is None and not self.sync.get())
         self.deconvolve_button.configure(state="normal" if ready else "disabled")
         self.export_button.configure(state="normal" if self.images and not disabled else "disabled")
         self.on_activity()
@@ -178,15 +182,16 @@ class Preview(ttk.LabelFrame):
             self.after_cancel(self.sync_job)
             self.sync_job = None
         self.update_controls()
-        if self.sync.get() and self.matches_loaded() and self.selected_channels and not self.disabled:
+        if self.sync.get() and self.matches_loaded() and self.selected_channels and not self.disabled and self.crop_drag is None:
             self.sync_job = self.after(500, lambda: self.deconvolve(automatic=True))
 
     def deconvolve(self, automatic=False):
         self.sync_job = None
-        if self.disabled or not self.matches_loaded() or not self.selected_channels or self.get_settings is None:
+        if self.disabled or self.crop_drag is not None or not self.matches_loaded() or not self.selected_channels or self.get_settings is None:
             return
         try:
             settings = self.get_settings()
+            settings["CROP_BOUNDS"] = {axis: list(bounds) for axis, bounds in self.crop.items()}
         except (ValueError, OSError, tk.TclError) as error:
             if not automatic:
                 self.on_error(str(error))
@@ -276,6 +281,7 @@ class Preview(ttk.LabelFrame):
                 elif kind == "loaded":
                     self.busy = None
                     self.data = value
+                    self.crop = {axis: [0, size] for axis, size in zip("zyx", value["shape"])}
                     self.reset_view()
                     self.build_channels()
                     z, y, x = self.data["shape"]
@@ -391,6 +397,83 @@ class Preview(ttk.LabelFrame):
             self.drag = key, event.x, event.y, dict(self.center)
             self.canvases[key].configure(cursor="fleur")
 
+    def crop_rectangle(self, key):
+        scale = self.view_scale()
+        canvas = self.canvases[key]
+        horizontal = "x" if key[1] == "xy" else "z"
+        spacing = dict(zip("zyx", self.data["spacing"]))
+        return [canvas.winfo_width() / 2 + (self.crop[horizontal][0] * spacing[horizontal] - self.center[horizontal]) * scale,
+                canvas.winfo_height() / 2 + (self.crop["y"][0] * spacing["y"] - self.center["y"]) * scale,
+                canvas.winfo_width() / 2 + (self.crop[horizontal][1] * spacing[horizontal] - self.center[horizontal]) * scale,
+                canvas.winfo_height() / 2 + (self.crop["y"][1] * spacing["y"] - self.center["y"]) * scale]
+
+    def crop_edges(self, key, x, y):
+        if key[0] != 0 or self.crop is None or self.disabled or self.view_scale() <= 0:
+            return []
+        left, top, right, bottom = self.crop_rectangle(key)
+        edges = []
+        if top - 7 <= y <= bottom + 7:
+            side = 0 if abs(x - left) <= abs(x - right) else 1
+            if abs(x - (left, right)[side]) <= 7:
+                edges.append(("x" if key[1] == "xy" else "z", side))
+        if left - 7 <= x <= right + 7:
+            side = 0 if abs(y - top) <= abs(y - bottom) else 1
+            if abs(y - (top, bottom)[side]) <= 7:
+                edges.append(("y", side))
+        return edges
+
+    def crop_cursor(self, event, key):
+        if self.drag is not None or self.crop_drag is not None:
+            return
+        edges = self.crop_edges(key, event.x, event.y)
+        cursor = "crosshair" if len(edges) == 2 else "sb_v_double_arrow" if edges and edges[0][0] == "y" else "sb_h_double_arrow" if edges else ""
+        self.canvases[key].configure(cursor=cursor)
+
+    def start_drag(self, event, key):
+        edges = self.crop_edges(key, event.x, event.y)
+        if not edges:
+            self.start_pan(event, key)
+            return
+        self.crop_drag = {"key": key, "edges": edges, "x": event.x, "y": event.y,
+                          "bounds": {axis: list(bounds) for axis, bounds in self.crop.items()},
+                          "scale": self.view_scale(), "changed": False}
+        self.update_controls()
+
+    def drag_motion(self, event):
+        if self.crop_drag is None:
+            self.pan(event)
+            return
+        drag = self.crop_drag
+        spacing = dict(zip("zyx", self.data["spacing"]))
+        sizes = dict(zip("zyx", self.data["shape"]))
+        bounds = {axis: list(value) for axis, value in drag["bounds"].items()}
+        for axis, side in drag["edges"]:
+            delta = event.y - drag["y"] if axis == "y" else event.x - drag["x"]
+            value = round(drag["bounds"][axis][side] + delta / (drag["scale"] * spacing[axis]))
+            bounds[axis][side] = max(0, min(bounds[axis][1] - 1, value)) if side == 0 else min(sizes[axis], max(bounds[axis][0] + 1, value))
+        if bounds != self.crop:
+            self.crop = bounds
+            if not drag["changed"]:
+                drag["changed"] = True
+                self.revision += 1
+                self.sync_changed()
+                self.deconvolved = None
+                if self.connection is not None:
+                    try:
+                        self.connection.send("clear_result")
+                    except (OSError, EOFError):
+                        pass
+                self.recolor()
+            self.schedule_draw()
+
+    def end_drag(self, event=None):
+        if self.crop_drag is not None:
+            key = self.crop_drag["key"]
+            self.crop_drag = None
+            self.canvases[key].configure(cursor="")
+            self.sync_changed()
+        self.end_pan()
+
     def pan(self, event):
         scale = self.view_scale()
         if self.drag is not None and scale > 0:
@@ -420,8 +503,11 @@ class Preview(ttk.LabelFrame):
             width, height = canvas.winfo_width(), canvas.winfo_height()
             horizontal = "x" if axis == "xy" else "z"
             spacing = dx if axis == "xy" else dz
-            transform = (1 / (scale * spacing), 0, (self.center[horizontal] - width / (2 * scale)) / spacing,
-                         0, 1 / (scale * dy), (self.center["y"] - height / (2 * scale)) / dy)
+            crop = self.deconvolved.get("crop") if row and self.deconvolved else None
+            x_offset = crop[horizontal][0] if crop else 0
+            y_offset = crop["y"][0] if crop else 0
+            transform = (1 / (scale * spacing), 0, (self.center[horizontal] - width / (2 * scale)) / spacing - x_offset,
+                         0, 1 / (scale * dy), (self.center["y"] - height / (2 * scale)) / dy - y_offset)
             rendered[row, axis] = image.transform((width, height), Image.Transform.AFFINE, transform,
                                                   Image.Resampling.BILINEAR, fillcolor=canvas.cget("background"))
         return rendered
@@ -435,6 +521,12 @@ class Preview(ttk.LabelFrame):
             self.photos[key] = ImageTk.PhotoImage(image, master=self)
             canvas.delete("all")
             canvas.create_image(0, 0, anchor="nw", image=self.photos[key])
+        if self.crop is not None and self.view_scale() > 0:
+            for axis in ("xy", "yz"):
+                key = 0, axis
+                canvas = self.canvases[key]
+                canvas.delete("crop")
+                canvas.create_rectangle(*self.crop_rectangle(key), outline="#ffff00", width=2, tags="crop")
 
     def screenshot(self):
         rendered = self.render_views()
@@ -466,6 +558,7 @@ class Preview(ttk.LabelFrame):
             "display_range": [0, 255],
             "zoom_percent": self.zoom.get(),
             "center_xyz": dict(self.center),
+            "crop_bounds": data.get("crop"),
             "channels": [{"index": channel["index"], "name": channel["name"],
                           "color": self.preferences.get(str(channel["index"]), {}).get("color", "Original"),
                           "processing": channel.get("processing")} for channel in channels],
@@ -529,6 +622,8 @@ class Preview(ttk.LabelFrame):
                 break
         self.data = None
         self.deconvolved = None
+        self.crop = None
+        self.crop_drag = None
         self.end_pan()
         self.reset_view()
         self.build_channels()
