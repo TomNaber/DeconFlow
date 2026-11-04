@@ -1,0 +1,17 @@
+name: batch-deconvolution
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.13
+  - pip
+  - tk
+  - hdf5=2.1
+  - lz4-c=1.10
+  - openjdk=21
+  - pip:
+      - -r requirements.txt
+variables:
+  BFF_JAVA_VERSION: "21"
+  BFF_JAVA_FETCH: never
+  BIOFORMATS_VERSION: "8.5.0"

@@ -1,0 +1,7 @@
+numpy==2.5.1
+psfmodels==0.3.3
+tifffile==2026.7.14
+h5py==3.16.0
+bioio==3.4.0
+bioio-bioformats==2.0.0
+./vendor/napari_vipp_imaris-0.1.0a1-py3-none-macosx_12_0_arm64.whl

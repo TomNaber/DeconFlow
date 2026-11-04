@@ -3,6 +3,7 @@
 import gc
 import json
 import os
+import shutil
 import subprocess
 import sys
 import traceback
@@ -125,7 +126,9 @@ def scijava_string(value):
 def run_fiji(image, psf, label):
     started = perf_counter()
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
-        directory = Path(directory)
+        directory = Path(directory).resolve()
+        (directory / "lib").mkdir()
+        shutil.copyfile(SOURCE_DIR / "lib/totalvariationterm.cl", directory / "lib/totalvariationterm.cl")
         input_tif = directory / "input.tif"
         psf_tif = directory / "psf.tif"
         output_tif = directory / "output.tif"
@@ -180,7 +183,7 @@ def run_fiji(image, psf, label):
             text=True,
             bufsize=1,
             env=environment,
-            cwd=FIJI_EXECUTABLE.parents[3],
+            cwd=directory,
         )
         for line in process.stdout or ():
             if line := line.strip():
@@ -299,7 +302,7 @@ def main():
     for path in (
         FIJI_EXECUTABLE,
         SOURCE_DIR / "fiji_rltv_worker.py",
-        FIJI_EXECUTABLE.parents[3] / "lib/totalvariationterm.cl",
+        SOURCE_DIR / "lib/totalvariationterm.cl",
     ):
         if not path.is_file():
             raise FileNotFoundError(path)
