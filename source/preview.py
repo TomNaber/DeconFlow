@@ -651,11 +651,11 @@ class Preview(ttk.LabelFrame):
         metadata = {
             "source": data["path"],
             "view": "Deconvolved" if row else "Original",
-            "display_range": [0, 255],
             "zoom_percent": self.zoom.get(),
             "center_xyz": dict(self.center),
             "crop_bounds": data.get("crop"),
             "channels": [{"index": channel["index"], "name": channel["name"],
+                          "display_range": list(channel["range"]),
                           "color": self.preferences.get(str(channel["index"]), {}).get("color", "Original"),
                           "processing": channel.get("processing")} for channel in channels],
         }

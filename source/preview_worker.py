@@ -14,6 +14,17 @@ import numpy as np
 from source.channel_metadata import read_channels, text
 
 
+def display_range(volume):
+    """Use the full integer range, or the data range for floating-point images."""
+    if np.issubdtype(volume.dtype, np.integer):
+        limits = np.iinfo(volume.dtype)
+        return float(limits.min), float(limits.max)
+    low, high = float(volume.min()), float(volume.max())
+    if low == high:
+        return (0.0, high) if high > 0 else (low, low + 1.0)
+    return low, high
+
+
 def load_volume(path):
     channels = read_channels(path)
     if not channels:
@@ -54,7 +65,7 @@ def load_volume(path):
                 **channel,
                 "xy": volume.max(axis=0),
                 "yz": volume.max(axis=2).T,
-                "range": (0.0, 255.0),
+                "range": display_range(volume),
                 "color": color,
             })
     return volumes, {"path": str(path), "shape": shape, "spacing": spacing, "channels": projections}
@@ -205,6 +216,8 @@ def deconvolve_volume(cache, settings, directory, emit, stale, initialized):
             started = perf_counter()
             stored = batch.store_result(result.reshape(shape))
             projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T,
+                          # Stretch each result channel to its brightest voxel.
+                          "range": (0.0, max(1.0, float(stored.max()))),
                           "processing": processing}
             cache.results[index] = projection
             del result, stored
