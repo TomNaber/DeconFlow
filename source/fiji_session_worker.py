@@ -43,7 +43,6 @@ except:
 # geometries retained. Per-call FFT plans and image buffers are still released.
 fft_geometries = set()
 MAX_FFT_GEOMETRIES = 8
-last_geometry = None
 
 
 def reset_fft_cache():
@@ -53,8 +52,28 @@ def reset_fft_cache():
     fft_geometries.clear()
 
 
+def fft_dimensions(image_shape, psf_shape):
+    extended = FinalDimensions(array([i + p for i, p in zip(image_shape, psf_shape)], 'l'))
+    return tuple(long(n) for n in ops.filter().fftSize(extended, False)[0])
+
+
+def inspect_geometries(request):
+    # Predict the same cache resets as the upcoming channel sequence without
+    # changing the actual cache or allocating image/GPU buffers.
+    cached = set(fft_geometries)
+    geometries = []
+    for item in request['geometries']:
+        fft_shape = fft_dimensions(item['crop'], item['psf'])
+        key = (fft_shape, bool(request['non_circulant']))
+        if key not in cached and len(cached) >= MAX_FFT_GEOMETRIES:
+            cached.clear()
+        geometries.append(dict(item, fft=fft_shape,
+                               cache='reused' if key in cached else 'new'))
+        cached.add(key)
+    return geometries
+
+
 def deconvolve(request):
-    global last_geometry
     timings = {}
     start = clock()
     image = ops.convert().float32(io.open(request['input_path']).getImgPlus())
@@ -63,20 +82,14 @@ def deconvolve(request):
     image_shape = tuple(long(image.dimension(i)) for i in range(image.numDimensions()))
     psf_shape = tuple(long(psf.dimension(i)) for i in range(psf.numDimensions()))
     # Use the same dimension calculation as the installed OpenCLFFTUtility.
-    extended = FinalDimensions(array([i + p for i, p in zip(image_shape, psf_shape)], 'l'))
-    fft_shape = tuple(long(n) for n in ops.filter().fftSize(extended, False)[0])
+    fft_shape = fft_dimensions(image_shape, psf_shape)
     fft_key = (fft_shape, bool(request['non_circulant']))
-    geometry = (image_shape, psf_shape, fft_key)
     if fft_key not in fft_geometries and len(fft_geometries) >= MAX_FFT_GEOMETRIES:
         reset_fft_cache()
-    if geometry != last_geometry or fft_key not in fft_geometries:
-        dimensions = lambda shape: 'x'.join(str(int(n)) for n in shape)
-        print('Crop XYZ=' + dimensions(image_shape) + ', PSF XYZ=' + dimensions(psf_shape)
-              + ', FFT XYZ=' + dimensions(fft_shape)
-              + ('; first use in this FFT cache, GPU setup may take longer.'
-                 if fft_key not in fft_geometries else '; reusing FFT cache.'))
-        System.out.flush()
-        last_geometry = geometry
+    publish('geometry-' + request['id'] + '.json', {
+        'crop': image_shape, 'psf': psf_shape, 'fft': fft_shape,
+        'cache': 'reused' if fft_key in fft_geometries else 'new',
+    })
     gpu_image = gpu_psf = gpu_output = None
     succeeded = False
     try:
@@ -144,7 +157,10 @@ while os.path.isdir(session_dir):
             request = json.load(handle)
         os.remove(request_path)
         try:
-            response = {'id': request['id'], 'timings': deconvolve(request)}
+            if request.get('operation') == 'inspect':
+                response = {'id': request['id'], 'geometries': inspect_geometries(request)}
+            else:
+                response = {'id': request['id'], 'timings': deconvolve(request)}
         except:
             response = {'id': request['id'], 'error': traceback.format_exc()}
         publish('response-' + request['id'] + '.json', response)

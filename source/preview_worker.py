@@ -84,7 +84,7 @@ def channel_settings(settings, index):
         fingerprint = (str(path), None)
     return {
         **{key: value for key, value in settings.items()
-           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE")},
+           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES")},
         "PSF_FILE": filename,
         "PSF_FINGERPRINT": fingerprint,
     }
@@ -145,7 +145,7 @@ class PreviewCache:
                 self.psfs[index] = (fingerprint, path)
 
 
-def deconvolve_volume(cache, settings, directory, emit, stale):
+def deconvolve_volume(cache, settings, directory, emit, stale, initialized):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import batch_deconvolve_ims as batch
 
@@ -159,23 +159,46 @@ def deconvolve_volume(cache, settings, directory, emit, stale):
     if not selected or len(settings["PSF_FILES"]) != len(selected):
         raise ValueError("Select one PSF for each selected channel.")
     cache.prepare(settings, stale)
+    from fiji_session import FijiClient
+    if stale():
+        return cache.original
     bounds = cache.bounds(settings)
+    crop_xyz = [bounds[axis][1] - bounds[axis][0] for axis in "xyz"]
+    geometries = []
+    for index in selected:
+        with tifffile.TiffFile(cache.psfs[index][1]) as psf:
+            psf_xyz = list(reversed(psf.series[0].shape))
+        geometries.append({"crop": crop_xyz, "psf": psf_xyz})
+    geometries = FijiClient(settings["FIJI_SESSION"]).inspect_geometries(
+        geometries, settings["RLTV_NON_CIRCULANT"])
+    initialized()
+
+    def dimensions(field):
+        shapes = list(dict.fromkeys(tuple(item[field]) for item in geometries))
+        return " or ".join(" x ".join(str(n) for n in shape) for shape in shapes)
+
+    cache_status = "new" if any(item["cache"] == "new" for item in geometries) else "reused"
+    print(f"Crop XYZ {dimensions('crop')}. PSF XYZ {dimensions('psf')}. "
+          f"Padded FFT XYZ {dimensions('fft')}. FFT cache {cache_status}.", flush=True)
     projections = []
     public_settings = {key: value for key, value in settings.items() if key not in ("FIJI_SESSION", "FORCE")}
-    for index in selected:
+    for position, index in enumerate(selected, start=1):
         if stale():
             break
         _, channel = cache.volumes[index]
+        output_name = settings.get("OUTPUT_CHANNEL_NAMES", {}).get(str(index), channel["name"])
+        label = f"Preview C{position}/{len(selected)} {output_name}"
         processing = channel_settings(settings, index)
         processing["PSF_FINGERPRINT"] = cache.psfs[index][0]
         previous = cache.results.get(index)
         if not settings.get("FORCE", False) and previous is not None and previous["processing"] == processing:
             projection = previous
-            print(f"Preview C{index + 1}: using cached result", flush=True)
+            print(f"{label} completed in 0.0s (cached).", flush=True)
         else:
-            result = batch.run_fiji(None, None, f"Preview C{index + 1} {channel['name']}",
+            result = batch.run_fiji(None, None, label,
                                    session_directory=settings["FIJI_SESSION"],
-                                   input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1])
+                                   input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1],
+                                   report_geometry=False)
             shape = tuple(bounds[a][1] - bounds[a][0] for a in "zyx")
             if result.size != np.prod(shape):
                 raise ValueError("Deconvolution returned an unexpected image size.")
@@ -185,7 +208,6 @@ def deconvolve_volume(cache, settings, directory, emit, stale):
                           "processing": processing}
             cache.results[index] = projection
             del result, stored
-            print(f"Preview C{index + 1} conversion/projections: {perf_counter() - started:.3f}s", flush=True)
         projections.append(projection)
         if not stale():
             emit({**cache.original, "channels": list(projections), "settings": public_settings, "crop": bounds})
@@ -212,7 +234,6 @@ def run(connection, path, cache_directory):
         started = perf_counter()
         volumes, projection = load_volume(path)
         cache = PreviewCache(cache_directory, volumes, projection)
-        connection.send(("log", f"Preview source load/projections: {perf_counter() - started:.3f}s\n"))
         connection.send(("loaded", projection))
         while True:
             request = connection.recv()
@@ -237,6 +258,7 @@ def run(connection, path, cache_directory):
                         cache, settings, directory,
                         lambda result: connection.send(("channel", (revision, result))),
                         lambda: stale(revision),
+                        lambda: connection.send(("initialized", revision)),
                     )
                 connection.send(("deconvolved", (revision, result)))
             except Exception:

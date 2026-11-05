@@ -20,6 +20,7 @@ from platform_support import default_fiji_executable
 from ims_writer import write_imaris
 from edit_ims_channels import parse_color
 from psf_channels import read_psf_channels
+from console_progress import ProgressLine
 
 
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -99,10 +100,6 @@ def read_volume(reader, time_index, channel_index):
     if raw.dtype == np.int8:
         print("      WARNING: reinterpreting signed int8 bytes as uint8")
         raw = raw.view(np.uint8)
-    print(
-        f"      input dtype={raw.dtype}, "
-        f"range={float(raw.min()):g}–{float(raw.max()):g}"
-    )
     image = np.asarray(raw, dtype=np.float32)
     np.nan_to_num(image, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     np.maximum(image, 0.0, out=image)
@@ -203,7 +200,8 @@ def run_fiji_one_shot(image, psf, label):
 _session = None
 
 
-def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_path=None):
+def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_path=None,
+             report_geometry=True):
     """Reuse Fiji; callers may supply immutable, already prepared TIFFs."""
     from fiji_session import FijiClient, FijiSession
     global _session
@@ -216,10 +214,8 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
                 _session.close()
             _session = FijiSession(*key)
         session_directory = _session.directory
-    started = perf_counter()
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
         directory = Path(directory)
-        staged = perf_counter()
         if input_path is None:
             input_path = directory / "input.tif"
             tifffile.imwrite(input_path, np.ascontiguousarray(image, dtype=np.float32),
@@ -228,17 +224,19 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
             psf_path = directory / "psf.tif"
             tifffile.imwrite(psf_path, np.ascontiguousarray(psf, dtype=np.float32),
                              photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
-        staged = perf_counter() - staged
         output_path = directory / "output.tif"
-        timings = FijiClient(session_directory).run(input_path, psf_path, output_path,
-                                                   ITERATIONS, RLTV_REGULARIZATION, RLTV_NON_CIRCULANT)
-        read = perf_counter()
-        result = np.asarray(tifffile.imread(output_path), dtype=np.float32).squeeze()
-        timings["read"] = perf_counter() - read
-    timings["stage"] = staged
-    total = perf_counter() - started
-    print(f"      {label}: total={total:.3f}s; " + "; ".join(
-        f"{name}={seconds:.3f}s" for name, seconds in timings.items()), flush=True)
+        progress = ProgressLine(label)
+        progress.update()
+        success = False
+        try:
+            FijiClient(session_directory).run(
+                input_path, psf_path, output_path, ITERATIONS,
+                RLTV_REGULARIZATION, RLTV_NON_CIRCULANT, progress=progress.update,
+                geometry=progress.geometry if report_geometry else None)
+            result = np.asarray(tifffile.imread(output_path), dtype=np.float32).squeeze()
+            success = True
+        finally:
+            progress.finish(success)
     return np.ascontiguousarray(result)
 
 
@@ -257,23 +255,18 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 f"T{time_index + 1}/{n_timepoints} "
                 f"C{channel_index + 1}/{n_channels} {name}"
             )
-            print(f"    {label}")
+            print(f"{label}: preparing input...", flush=True)
             image = read_volume(reader, time_index, channel_index)
             result = run_fiji(image, psfs[channel_index], label)
             stored = store_result(result)
 
-            float_min, float_max = float(result.min()), float(result.max())
             saturated = int(np.count_nonzero(result > 65535))
-            stored_min, stored_max = int(stored.min()), int(stored.max())
+            stored_max = int(stored.max())
             channel_maxima[channel_index] = max(
                 channel_maxima[channel_index], stored_max
             )
             output[time_index, channel_index] = stored
             output.flush()
-            print(
-                f"      RL-TV float range={float_min:g}–{float_max:g}; "
-                f"stored uint16={stored_min}–{stored_max}"
-            )
             if saturated:
                 print(
                     f"      WARNING: {saturated:,} voxels "

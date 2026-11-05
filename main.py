@@ -178,6 +178,7 @@ def main():
             settings[name] = value
         settings["PSF_FILES"] = []
         settings["CHANNEL_INDICES"] = []
+        settings["OUTPUT_CHANNEL_NAMES"] = {}
         for channel in active_channels:
             if channel["index"] not in preview.selected_channels:
                 continue
@@ -186,6 +187,8 @@ def main():
                 raise ValueError(f"Select an available PSF for C{channel['index'] + 1}.")
             settings["PSF_FILES"].append(filename)
             settings["CHANNEL_INDICES"].append(channel["index"])
+            settings["OUTPUT_CHANNEL_NAMES"][str(channel["index"])] = channel_preferences.get(
+                str(channel["index"]), {}).get("name", channel["name"])
         return settings
 
     preview.get_settings = preview_settings
@@ -571,8 +574,14 @@ def main():
             stop_process_tree(child.pid, force=True)
 
     def read_output(child):
-        for line in child.stdout:
-            events.put(line)
+        # Keep carriage returns intact for live progress updates.
+        import codecs
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        while chunk := child.stdout.buffer.read1(4096):
+            events.put(decoder.decode(chunk))
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            events.put(tail)
         child.stdout.close()
         events.put(child.wait())
 
@@ -592,7 +601,11 @@ def main():
                 schedule_fiji_initialization()
                 refresh_channels()
             console.configure(state="normal")
-            console.insert("end", item)
+            for index, part in enumerate(item.split("\r")):
+                if index:
+                    console.delete("end-1c linestart", "end-1c")
+                if part:
+                    console.insert("end", part)
             console.see("end")
             console.configure(state="disabled")
         window.after(100, poll)

@@ -1,5 +1,6 @@
 """Owned headless Fiji process and a small, file-based request protocol."""
 import atexit
+from collections import deque
 from contextlib import contextmanager
 import json
 import os
@@ -40,6 +41,7 @@ class FijiSession:
         self.log = log
         self.process = None
         self.closed = False
+        self.diagnostics = deque(maxlen=100)
         self._lock = threading.Lock()
         if not self.executable.is_file() or not os.access(self.executable, os.X_OK):
             raise FileNotFoundError(f'No Fiji detected at path: {self.executable}')
@@ -48,7 +50,7 @@ class FijiSession:
         atomic_json(self.directory / 'owner.json', {'pid': os.getpid()})
         (self.directory / 'lib').mkdir()
         shutil.copyfile(SOURCE / 'lib/totalvariationterm.cl', self.directory / 'lib/totalvariationterm.cl')
-        self.log('Initializing Fiji…\n')
+        self.log('Initializing Fiji.\n')
         environment = os.environ.copy()
         for name in ('JAVA_HOME', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH'):
             environment.pop(name, None)
@@ -72,19 +74,19 @@ class FijiSession:
     def _read_log(self):
         for line in self.process.stdout:
             if not self.closed and line.strip():
-                self.log('Fiji: ' + line)
+                self.diagnostics.append(line.rstrip())
         self.process.stdout.close()
         status = self.process.wait()
         with self._lock:
             if not self.closed:
-                atomic_json(self.directory / 'failed.json', {'error': f'Fiji exited with status {status}'})
+                atomic_json(self.directory / 'failed.json', {'error': f'Fiji exited with status {status}\n' + '\n'.join(self.diagnostics)})
 
     def _watch_startup(self):
         started = monotonic()
         try:
             ready = FijiClient(self.directory).wait_ready()
             if not self.closed:
-                self.log(f"Fiji ready — {ready['gpu']} ({monotonic() - started:.2f} s)\n")
+                self.log(f"Fiji ready. {ready['gpu']} ({monotonic() - started:.2f} s)\n")
         except Exception as error:
             if not self.closed:
                 self.log(f'Fiji initialization failed: {error}\n')
@@ -132,13 +134,48 @@ class FijiClient:
         with exclusive_file_lock(self.directory / 'client.lock', JOB_TIMEOUT, self._check):
             yield
 
-    def run(self, input_path, psf_path, output_path, iterations, regularization, non_circulant):
+    def inspect_geometries(self, geometries, non_circulant):
+        """Ask the owning JVM for padding and cache state before any RL calls."""
+        with self._exclusive():
+            self.wait_ready()
+            request_id = uuid.uuid4().hex
+            response = self.directory / ('response-' + request_id + '.json')
+            atomic_json(self.directory / 'request.json', {
+                'id': request_id, 'operation': 'inspect',
+                'geometries': geometries, 'non_circulant': non_circulant,
+            })
+            deadline = monotonic() + JOB_TIMEOUT
+            while not response.is_file():
+                self._check()
+                if monotonic() >= deadline:
+                    atomic_json(self.directory / 'failed.json', {'error': 'Fiji job timed out; restart Fiji.'})
+                    raise TimeoutError('Fiji job timed out; restart Fiji.')
+                sleep(0.025)
+            result = json.loads(response.read_text())
+            response.unlink()
+            if result['id'] != request_id:
+                raise RuntimeError('Unexpected Fiji response ID.')
+            if 'error' in result:
+                raise RuntimeError(result['error'])
+            return result['geometries']
+
+    def run(self, input_path, psf_path, output_path, iterations, regularization, non_circulant, progress=None, geometry=None):
         started = monotonic()
         with self._exclusive():
             self.wait_ready()
             queue_ready = monotonic() - started
             request_id = uuid.uuid4().hex
             response = self.directory / ('response-' + request_id + '.json')
+            geometry_path = self.directory / ('geometry-' + request_id + '.json')
+            geometry_reported = False
+
+            def report_geometry():
+                nonlocal geometry_reported
+                if not geometry_reported and geometry_path.is_file():
+                    if geometry is not None:
+                        geometry(json.loads(geometry_path.read_text()))
+                    geometry_reported = True
+
             atomic_json(self.directory / 'request.json', {
                 'id': request_id, 'input_path': str(Path(input_path).resolve()),
                 'psf_path': str(Path(psf_path).resolve()), 'output_path': str(Path(output_path).resolve()),
@@ -148,11 +185,16 @@ class FijiClient:
             deadline = monotonic() + JOB_TIMEOUT
             while not response.is_file():
                 self._check()
+                report_geometry()
+                if progress is not None:
+                    progress()
                 if monotonic() >= deadline:
                     # Poison the session so another client cannot submit overlapping work.
                     atomic_json(self.directory / 'failed.json', {'error': 'Fiji job timed out; restart Fiji.'})
                     raise TimeoutError('Fiji job timed out; restart Fiji.')
                 sleep(0.025)
+            report_geometry()
+            geometry_path.unlink(missing_ok=True)
             result = json.loads(response.read_text())
             response.unlink()
             if result['id'] != request_id:

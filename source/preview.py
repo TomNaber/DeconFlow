@@ -61,6 +61,8 @@ class Preview(ttk.LabelFrame):
         self.prepare_job = None
         self.fiji_session = None
         self.request_started = None
+        self.initializing = False
+        self.initialization_second = None
         self.sync = tk.BooleanVar(value=False)
         self.images = {}
         self.photos = {}
@@ -120,6 +122,7 @@ class Preview(ttk.LabelFrame):
                 canvas.bind("<Motion>", lambda event, key=key: self.crop_cursor(event, key))
                 self.canvases[row, axis] = canvas
         self.remove_pinch = install_pinch(self, self.pinch)
+        self.update_initialization()
         self.poll_job = self.after(50, self.poll)
 
     @property
@@ -261,23 +264,42 @@ class Preview(ttk.LabelFrame):
             return
         revision, settings = self.pending
         self.pending = None
+        self.request_started = perf_counter()
         try:
             directory = Path(settings["TEMP_DIR"]).expanduser()
             directory.mkdir(parents=True, exist_ok=True)
             self.job_directory = TemporaryDirectory(prefix="preview-", dir=directory)
             session = self.configure_fiji(settings["FIJI_EXECUTABLE"], settings["FIJI_MEMORY"])
             settings["FIJI_SESSION"] = str(session.directory)
-            self.request_started = perf_counter()
             self.connection.send((revision, settings, self.job_directory.name))
             self.running = (revision, settings)
             self.busy = "deconvolve"
-            self.on_log("\nDeconvolving preview...\n")
+            self.initializing = True
+            self.initialization_second = None
+            self.on_log("\n")
+            self.update_initialization()
         except (OSError, EOFError) as error:
             self.cleanup_job()
             self.on_error(str(error))
         self.update_controls()
 
+    def update_initialization(self):
+        if self.initializing:
+            elapsed = int(perf_counter() - self.request_started)
+            if elapsed != self.initialization_second:
+                self.initialization_second = elapsed
+                self.on_log(f"\rInitializing deconvolution preview. {elapsed}s elapsed.")
+
+    def finish_initialization(self, success):
+        if self.initializing:
+            self.initializing = False
+            elapsed = perf_counter() - self.request_started
+            message = (f"Deconvolution initialized in {elapsed:.1f}s." if success else
+                       f"Deconvolution initialization stopped after {elapsed:.1f}s.")
+            self.on_log("\r" + message + "\n")
+
     def cleanup_job(self):
+        self.finish_initialization(False)
         if self.job_directory is not None:
             self.job_directory.cleanup()
             self.job_directory = None
@@ -328,9 +350,14 @@ class Preview(ttk.LabelFrame):
             while True:
                 generation, (kind, value) = self.events.get_nowait()
                 if kind == "session_log":
-                    self.on_log(value)
+                    if not (self.initializing and value.startswith("Fiji ready")):
+                        self.on_log(value)
                     continue
                 if generation != self.generation:
+                    continue
+                if kind == "initialized":
+                    if value == self.revision:
+                        self.finish_initialization(True)
                     continue
                 if kind == "log":
                     self.on_log(value)
@@ -356,14 +383,9 @@ class Preview(ttk.LabelFrame):
                         if kind in ("channel", "deconvolved"):
                             # Each message contains only compatible channels from this request.
                             self.deconvolved = result
-                            started = perf_counter()
                             self.recolor()
-                            if kind == "channel":
-                                elapsed = perf_counter() - self.request_started
-                                self.on_log(f"Preview {len(result['channels'])}/{len(result['settings']['CHANNEL_INDICES'])} "
-                                            f"channels ready: {elapsed:.3f}s; draw={perf_counter() - started:.3f}s.\n")
-                            else:
-                                self.on_log("Preview finished.\n")
+                            if kind == "deconvolved":
+                                self.on_log(f"Preview finished in {perf_counter() - self.request_started:.0f}s.\n")
                         else:
                             self.stop_fiji()
                             self.on_error(result)
@@ -377,6 +399,7 @@ class Preview(ttk.LabelFrame):
                     self.on_error(value)
         except queue.Empty:
             pass
+        self.update_initialization()
         self.poll_job = self.after(50, self.poll)
 
     def recolor(self):
