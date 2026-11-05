@@ -64,12 +64,13 @@ def main():
     workspace.columnconfigure(0, weight=0)
     workspace.columnconfigure(1, weight=1)
     workspace.rowconfigure(0, weight=1)
-    parameter_panel = ttk.LabelFrame(workspace, padding=8)
+    # Untitled label frames still reserve a title inset on macOS.
+    parameter_panel = ttk.Frame(workspace, padding=8, relief="flat", borderwidth=0)
     parameter_panel.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
     settings_area = parameter_panel
     settings_area.rowconfigure(0, weight=1)
     settings_area.columnconfigure(0, weight=1)
-    settings_canvas = tk.Canvas(settings_area, highlightthickness=0, width=580, height=1)
+    settings_canvas = tk.Canvas(settings_area, highlightthickness=0, width=550, height=1)
     settings_canvas.grid(row=0, column=0, sticky="nsew")
     vertical = ttk.Scrollbar(settings_area, orient="vertical", command=settings_canvas.yview)
     vertical.grid(row=0, column=1, sticky="ns")
@@ -77,32 +78,53 @@ def main():
     controls = ttk.Frame(settings_canvas)
     controls_item = settings_canvas.create_window(0, 0, window=controls, anchor="nw")
 
+    layout_job = None
+    laying_out = False
+
+    def fit_controls():
+        nonlocal layout_job, laying_out
+        layout_job = None
+        laying_out = True
+        try:
+            # Settle child geometry before measuring the active notebook page.
+            window.update_idletasks()
+            notebook.configure(height=pages[mode.get()].winfo_reqheight())
+            window.update_idletasks()
+            available_height = settings_canvas.winfo_height()
+            content_height = controls.winfo_reqheight()
+            if content_height > available_height:
+                vertical.grid()
+            else:
+                vertical.grid_remove()
+                settings_canvas.yview_moveto(0)
+            window.update_idletasks()
+            settings_canvas.itemconfigure(controls_item, width=settings_canvas.winfo_width(),
+                                          height=max(content_height, available_height))
+            settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+        finally:
+            laying_out = False
+
     def layout_controls(event=None):
-        # A notebook otherwise reserves the height of its tallest page.
-        notebook.configure(height=panels[mode.get()].winfo_reqheight())
-        available_height = settings_canvas.winfo_height()
-        content_height = controls.winfo_reqheight()
-        settings_canvas.itemconfigure(controls_item, width=settings_canvas.winfo_width(),
-                                      height=max(content_height, available_height))
-        settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
-        if controls.winfo_reqheight() > settings_canvas.winfo_height():
-            vertical.grid()
-        else:
-            vertical.grid_remove()
-            settings_canvas.yview_moveto(0)
+        nonlocal layout_job
+        if not laying_out and layout_job is None:
+            layout_job = window.after_idle(fit_controls)
 
     controls.bind("<Configure>", layout_controls)
     settings_canvas.bind("<Configure>", layout_controls)
     notebook = ttk.Notebook(controls, padding=0)
-    notebook.pack(fill="x", pady=(10, 0))
+    notebook.pack(fill="x")
     panels = {}
+    pages = {}
     mode_labels = {
         "Deconvolution": "Richardson-Lucy deconvolution",
         "PSF generation": "Gibson-Lanni PSF",
     }
     for title in mode_labels:
-        panels[title] = ttk.Frame(notebook, padding=10)
-        notebook.add(panels[title], text=mode_labels[title])
+        pages[title] = ttk.Frame(notebook)
+        panels[title] = ttk.Frame(pages[title], padding=10)
+        panels[title].pack(fill="x")
+        panels[title].bind("<Configure>", layout_controls)
+        notebook.add(pages[title], text=mode_labels[title])
         fields[title] = {}
 
     def add_field(panel, group, row, name, label, default, kind=str, browse=None):
@@ -148,7 +170,7 @@ def main():
     for row, setting in enumerate(deconvolution):
         add_field(panels["Deconvolution"], "Deconvolution", row, *setting)
 
-    channel_panel = ttk.LabelFrame(panels["Deconvolution"], text="Select channels", padding=8)
+    channel_panel = ttk.Frame(panels["Deconvolution"], padding=8)
     channel_panel.grid(row=len(deconvolution), column=0, columnspan=2, sticky="ew", pady=(10, 0))
     channel_panel.columnconfigure(1, weight=1)
     channel_preferences = {}
@@ -164,9 +186,13 @@ def main():
         events.put(f"Preview: {error}\n")
         messagebox.showerror("Preview failed", error.splitlines()[-1], parent=window)
 
-    preview_panel = ttk.LabelFrame(workspace, padding=8)
+    preview_panel = ttk.Frame(workspace, padding=8, relief="flat", borderwidth=0)
     preview_panel.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
-    preview = Preview(preview_panel, channel_preferences, lambda: refresh_channels(), preview_error)
+    preview_notebook = ttk.Notebook(preview_panel, padding=0)
+    preview_notebook.pack(fill="both", expand=True)
+    preview_page = ttk.Frame(preview_notebook)
+    preview_notebook.add(preview_page, text="Preview")
+    preview = Preview(preview_page, channel_preferences, lambda: refresh_channels(), preview_error)
     preview.pack(fill="both", expand=True)
 
     def channel_iterations(key):
@@ -393,7 +419,7 @@ def main():
         pair_widgets.append((design_widgets[0], actual_widgets, label))
     add_field(psf_settings, "PSF generation", len(psf_fields) + len(pairs) * 2, "OVERWRITE", "Overwrite existing point-spread functions", True, bool)
     add_field(psf_settings, "PSF generation", len(psf_fields) + len(pairs) * 2 + 1, "OUTPUT_DIR", "Output folder", WORKSPACE / "psfs/1000", str, "directory")
-    ttk.Label(psf_panel, wraplength=540, text="Channels in image channel order: one per line, name, excitation wavelength (nm), emission wavelength (nm)").pack(anchor="w")
+    ttk.Label(psf_panel, wraplength=540, text="Channels: one per line, name, excitation wavelength (nm), emission wavelength (nm)").pack(anchor="w")
     channels = ScrolledText(psf_panel, width=1, height=4, wrap="none")
     channels.pack(fill="x", pady=5)
     channels.insert("1.0", "Alexa488, 488, 525\nAlexa568, 552, 603\nAlexa647, 638, 671")
@@ -406,14 +432,16 @@ def main():
                 widget.grid() if separate.get() else widget.grid_remove()
 
     def show_mode():
-        notebook.select(panels[mode.get()])
+        notebook.select(pages[mode.get()])
+        buttons.pack_forget()
+        buttons.pack(in_=pages[mode.get()], fill="x", padx=10, pady=(0, 10))
         console.configure(height=12 if mode.get() == "Deconvolution" else 8)
         window.after_idle(layout_controls)
 
     def tab_changed(event=None):
         selected = notebook.select()
-        for title, panel in panels.items():
-            if str(panel) == selected and mode.get() != title:
+        for title, page in pages.items():
+            if str(page) == selected and mode.get() != title:
                 mode.set(title)
                 show_mode()
                 break
@@ -715,8 +743,7 @@ def main():
             preview.close()
             window.destroy()
 
-    buttons = ttk.Frame(controls)
-    buttons.pack(fill="x", padx=10, pady=5)
+    buttons = ttk.Frame(notebook)
     run_button = ttk.Button(buttons, text="Run", command=start)
     run_button.pack(side="left")
     cancel_button = ttk.Button(buttons, text="Cancel", command=cancel, state="disabled")
@@ -731,7 +758,6 @@ def main():
     ttk.Button(buttons, text="Restore defaults", command=restore_defaults).pack(side="right")
     console_area = ttk.Frame(controls)
     console_area.pack(side="bottom", fill="both", expand=True, padx=10, pady=(18, 10))
-    ttk.Label(console_area, text="Console").pack(anchor="w")
     console = ScrolledText(console_area, width=1, height=8, state="disabled", wrap="word")
     console.pack(fill="both", expand=True, pady=(5, 0))
     notebook.bind("<<NotebookTabChanged>>", tab_changed)
@@ -744,7 +770,14 @@ def main():
         window.lift()
         if sys.platform == "darwin":
             # Raising a Tk window alone does not activate Python above an IDE.
-            from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+            from AppKit import NSApplication, NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+            for native_window in NSApplication.sharedApplication().windows():
+                if native_window.title() == window.title() and native_window.screen() is not None:
+                    # Use the current display's usable frame in macOS points.
+                    # This includes the title bar and respects Retina scaling,
+                    # the menu bar/notch area, and the Dock without fixed offsets.
+                    native_window.setFrame_display_(native_window.screen().visibleFrame(), True)
+                    break
             NSRunningApplication.currentApplication().activateWithOptions_(
                 NSApplicationActivateIgnoringOtherApps)
         window.focus_force()

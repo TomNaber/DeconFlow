@@ -82,7 +82,6 @@ class Preview(ttk.Frame):
         self.disabled = False
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(0, 8))
-        ttk.Label(toolbar, text="Preview").pack(side="left", padx=(0, 12))
         self.files = ttk.Combobox(toolbar, textvariable=self.filename, state="readonly", width=12)
         self.files.pack(side="left", fill="x", expand=True)
         self.files.bind("<<ComboboxSelected>>", lambda event: self.on_select())
@@ -129,6 +128,7 @@ class Preview(ttk.Frame):
         self.views.pack(side="left", fill="both", expand=True)
         self.canvases = {}
         self.view_cells = {}
+        self.comparison_divider = ttk.Separator(self.views, orient="horizontal")
         self.views.bind("<Configure>", self.layout_views)
         for row in range(2):
             for axis in ("xy", "yz"):
@@ -158,8 +158,10 @@ class Preview(ttk.Frame):
         left = (self.views.winfo_width() - 2 * side - gap) // 2
         top = (self.views.winfo_height() - 2 * side - gap) // 2
         for (comparison, axis), cell in self.view_cells.items():
-            cell.place_configure(x=left + comparison * (side + gap),
-                                 y=top + (axis == "yz") * (side + gap), width=side, height=side)
+            cell.place_configure(x=left + (axis == "yz") * (side + gap),
+                                 y=top + comparison * (side + gap), width=side, height=side)
+        self.comparison_divider.place(x=left, y=top + side + gap // 2,
+                                      width=2 * side + gap, height=1)
         for canvas in self.canvases.values():
             canvas.place_configure(width=side, height=side)
 
