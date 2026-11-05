@@ -403,27 +403,24 @@ class Preview(ttk.Frame):
                             self.data[f"{axis}_bounds"] = bounds[depth]
                         self.recolor()
                         self.schedule_projection()
-                elif kind in ("channel", "deconvolved", "failed"):
+                elif kind in ("deconvolved", "failed"):
                     revision, result = value
-                    if kind != "channel":
-                        self.busy = None
-                        self.running = None
-                        self.cleanup_job()
+                    self.busy = None
+                    self.running = None
+                    self.cleanup_job()
                     if revision == self.revision and self.matches_loaded():
-                        if kind in ("channel", "deconvolved"):
-                            # Each message contains only compatible channels from this request.
+                        if kind == "deconvolved":
+                            # Replace the preview atomically once every selected channel is ready.
                             self.deconvolved = result
                             self.recolor()
-                            if kind == "deconvolved":
-                                self.on_log(f"Preview finished in {perf_counter() - self.request_started:.0f}s.\n")
+                            self.on_log(f"Preview finished in {perf_counter() - self.request_started:.0f}s.\n")
                         else:
                             self.stop_fiji()
                             self.on_error(result)
                     self.update_controls()
-                    if kind != "channel":
-                        self.start_pending()
-                        if self.busy is None and revision != self.revision:
-                            self.prepare_inputs()
+                    self.start_pending()
+                    if self.busy is None and revision != self.revision:
+                        self.prepare_inputs()
                 else:
                     self.clear()
                     self.on_error(value)

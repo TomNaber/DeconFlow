@@ -170,7 +170,7 @@ class PreviewCache:
                 self.psfs[index] = (fingerprint, path)
 
 
-def deconvolve_volume(cache, settings, directory, emit, stale, initialized):
+def deconvolve_volume(cache, settings, directory, stale, initialized):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import batch_deconvolve_ims as batch
 
@@ -236,8 +236,6 @@ def deconvolve_volume(cache, settings, directory, emit, stale, initialized):
             cache.results[index] = projection
             del result, stored
         projections.append(projection)
-        if not stale():
-            emit({**cache.original, "channels": list(projections), "settings": public_settings, "crop": bounds})
     return {**cache.original, "channels": projections, "settings": public_settings, "crop": bounds}
 
 
@@ -287,7 +285,6 @@ def run(connection, path, cache_directory):
                 with redirect_stdout(Log(connection)), redirect_stderr(Log(connection)):
                     result = deconvolve_volume(
                         cache, settings, directory,
-                        lambda result: connection.send(("channel", (revision, result))),
                         lambda: stale(revision),
                         lambda: connection.send(("initialized", revision)),
                     )
