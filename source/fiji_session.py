@@ -57,7 +57,7 @@ class FijiSession:
         parameter = 'session_dir=' + json.dumps(str(self.directory))
         try:
             self.process = subprocess.Popen(
-                [str(self.executable), f'--mem={self.memory}',
+                [str(self.executable), '--no-splash', '--headless', f'--mem={self.memory}',
                  '-Dimagej.updater.disableAutocheck=true', '--', '--headless', '--run',
                  str(SOURCE / 'fiji_session_worker.py'), parameter],
                 cwd=self.directory, env=environment, stdout=subprocess.PIPE,

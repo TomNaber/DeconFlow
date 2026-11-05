@@ -157,6 +157,8 @@ def run_fiji_one_shot(image, psf, label):
         )
         command = [
             str(FIJI_EXECUTABLE),
+            "--no-splash",
+            "--headless",
             f"--mem={FIJI_MEMORY}",
             "-Dimagej.updater.disableAutocheck=true",
             "--",

@@ -632,6 +632,19 @@ def main():
     show_actual()
     show_mode()
     window.protocol("WM_DELETE_WINDOW", close)
+
+    def activate_on_startup():
+        window.update_idletasks()
+        window.lift()
+        if sys.platform == "darwin":
+            # Raising a Tk window alone does not activate Python above an IDE.
+            from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+            NSRunningApplication.currentApplication().activateWithOptions_(
+                NSApplicationActivateIgnoringOtherApps)
+        window.focus_force()
+
+    # Run once after layout, including when preview setup already mapped the window.
+    activate_on_startup()
     poll()
     window.mainloop()
 
