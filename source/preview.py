@@ -16,9 +16,13 @@ from PIL.PngImagePlugin import PngInfo
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
 from source.preview_gestures import install_pinch
+from source.ui_style import is_dark
 from source.fiji_session import FijiSession, atomic_json
 from source.platform_support import stop_process_tree
 
+
+MIN_ZOOM = 10
+MAX_ZOOM = 5000
 
 def composite(channels, axis, preferences):
     result = np.zeros((*channels[0][axis].shape, 3), dtype=np.float32)
@@ -31,9 +35,9 @@ def composite(channels, axis, preferences):
     return Image.fromarray(np.rint(np.clip(result, 0, 1) * 255).astype(np.uint8))
 
 
-class Preview(ttk.LabelFrame):
+class Preview(ttk.Frame):
     def __init__(self, parent, preferences, on_select, on_error):
-        super().__init__(parent, text="Preview", padding=8)
+        super().__init__(parent, padding=8)
         self.preferences = preferences
         self.on_select = on_select
         self.on_error = on_error
@@ -50,7 +54,6 @@ class Preview(ttk.LabelFrame):
         self.events = queue.Queue()
         self.data = None
         self.deconvolved = None
-        self.channel_variables = {}
         self.busy = None
         self.revision = 0
         self.pending = None
@@ -68,6 +71,8 @@ class Preview(ttk.LabelFrame):
         self.photos = {}
         self.zoom = tk.DoubleVar(value=100)
         self.zoom_label = tk.StringVar(value="100%")
+        self.zoom_position = tk.DoubleVar(value=MIN_ZOOM + MAX_ZOOM - 100)
+        self.zoom.trace_add("write", self.sync_zoom_control)
         self.center = dict.fromkeys("xyz", 0.0)
         self.drag = None
         self.crop = None
@@ -78,13 +83,12 @@ class Preview(ttk.LabelFrame):
         self.disabled = False
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(0, 8))
+        ttk.Label(toolbar, text="Preview").pack(side="left", padx=(0, 12))
         self.files = ttk.Combobox(toolbar, textvariable=self.filename, state="readonly", width=12)
         self.files.pack(side="left", fill="x", expand=True)
         self.files.bind("<<ComboboxSelected>>", lambda event: self.on_select())
         self.load_button = ttk.Button(toolbar, text="Load", command=self.load, state="disabled")
         self.load_button.pack(side="left", padx=(6, 0))
-        self.channel_bar = ttk.Frame(self)
-        self.channel_bar.pack(fill="x", pady=(0, 4))
         actions = ttk.Frame(self)
         actions.pack(side="bottom", fill="x", pady=(8, 0))
         self.deconvolve_button = ttk.Button(actions, text="Deconvolve preview", command=self.deconvolve, state="disabled")
@@ -93,27 +97,49 @@ class Preview(ttk.LabelFrame):
         self.sync_button.pack(side="left", padx=8)
         self.export_button = ttk.Button(actions, text="Export screenshot", command=self.export_screenshot, state="disabled")
         self.export_button.pack(side="right")
-        zoom_bar = ttk.Frame(self)
-        zoom_bar.pack(side="bottom", fill="x", pady=(8, 0))
-        ttk.Label(zoom_bar, text="Zoom").pack(side="left")
-        self.zoom_slider = ttk.Scale(zoom_bar, from_=10, to=1600, variable=self.zoom, command=self.slider_zoom)
-        self.zoom_slider.pack(side="left", fill="x", expand=True, padx=8)
-        self.reset_button = ttk.Button(zoom_bar, text="Reset", command=self.reset_zoom, state="disabled")
-        self.reset_button.pack(side="right", padx=(8, 0))
-        ttk.Label(zoom_bar, textvariable=self.zoom_label, width=6, anchor="e").pack(side="right")
-        self.views = ttk.Frame(self)
-        self.views.pack(fill="both", expand=True)
+        image_area = ttk.Frame(self)
+        image_area.pack(fill="both", expand=True)
+        zoom_bar = ttk.Frame(image_area)
+        zoom_bar.pack(side="right", fill="y", padx=(6, 0))
+        # Tk 8.6 uses PNG exports of the SVG source icons bundled alongside them.
+        assets = Path(__file__).with_name("assets")
+        icon_suffix = "-light" if is_dark(self) else ""
+        self.zoom_icons = {
+            name: tk.PhotoImage(master=self, file=str(assets / f"{name}{icon_suffix}.png"))
+            for name in ("zoom-in", "zoom-out")
+        }
+        zoom_in_icon = ttk.Label(zoom_bar, image=self.zoom_icons["zoom-in"], anchor="center")
+        zoom_in_icon.pack()
+        self.zoom_slider = ttk.Scale(zoom_bar, from_=MIN_ZOOM, to=MAX_ZOOM, orient="vertical",
+                                     variable=self.zoom_position, command=self.slider_zoom)
+        self.zoom_slider.pack(fill="y", expand=True, pady=4)
+        zoom_out_icon = ttk.Label(zoom_bar, image=self.zoom_icons["zoom-out"], anchor="center")
+        zoom_out_icon.pack()
+
+        def refresh_zoom_icons(event=None):
+            suffix = "-light" if is_dark(self) else ""
+            for name, label in (("zoom-in", zoom_in_icon), ("zoom-out", zoom_out_icon)):
+                self.zoom_icons[name].configure(file=str(assets / f"{name}{suffix}.png"))
+
+        self.bind("<Map>", refresh_zoom_icons)
+        self.reset_button = ttk.Button(zoom_bar, text="↺", width=1,
+                                       command=self.reset_zoom, state="disabled")
+        self.reset_button.pack(fill="x", pady=(4, 0))
+        ttk.Label(zoom_bar, textvariable=self.zoom_label, anchor="center").pack(fill="x", pady=(4, 0))
+        self.views = ttk.Frame(image_area)
+        self.views.pack(side="left", fill="both", expand=True)
         self.views.columnconfigure(0, weight=1, uniform="preview_columns")
         self.views.columnconfigure(1, weight=1, uniform="preview_columns")
         self.canvases = {}
         self.view_cells = {}
-        for row, title in enumerate(("Original", "Deconvolved")):
+        ttk.Separator(self.views, orient="horizontal").grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=3)
+        for row in range(2):
             base = row * 2
-            ttk.Label(self.views, text=title).grid(row=base, column=0, columnspan=2, sticky="w", pady=(4, 0))
-            self.views.rowconfigure(base + 1, weight=1, uniform="preview")
+            self.views.rowconfigure(base, weight=1, uniform="preview")
             for column, axis in enumerate(("xy", "yz")):
                 cell = ttk.Frame(self.views)
-                cell.grid(row=base + 1, column=column, sticky="nsew", padx=2, pady=2)
+                cell.grid(row=base, column=column, sticky="nsew", padx=2, pady=2)
                 self.view_cells[row, axis] = cell
                 cell.bind("<Configure>", self.layout_views)
                 canvas = tk.Canvas(cell, width=1, height=1, highlightthickness=0, background="#242424")
@@ -145,31 +171,15 @@ class Preview(ttk.LabelFrame):
 
     @property
     def selected_channels(self):
-        return [index for index, variable in self.channel_variables.items() if variable.get()]
-
-    def channel_label(self, channel):
-        index = channel["index"]
-        name = self.preferences.get(str(index), {}).get("name")
-        if not name or not name.strip():
-            name = channel["name"]
-        return f"C{index + 1}: {name}"
-
-    def build_channels(self):
-        for widget in self.channel_bar.winfo_children():
-            widget.destroy()
-        self.channel_variables.clear()
-        if self.data is not None:
-            for position, channel in enumerate(self.data["channels"]):
-                index = channel["index"]
-                variable = tk.BooleanVar(value=True)
-                self.channel_variables[index] = variable
-                ttk.Checkbutton(self.channel_bar, text=self.channel_label(channel),
-                                variable=variable, command=self.channels_changed).grid(
-                                    row=position // 3, column=position % 3, sticky="w", padx=(0, 8))
+        if self.data is None:
+            return []
+        return [channel["index"] for channel in self.data["channels"]
+                if self.preferences.get(str(channel["index"]), {}).get("enabled", True)]
 
     def channels_changed(self):
         self.recolor()
         self.parameters_changed()
+        self.update_controls()
 
     def set_folder(self, folder):
         self.folder = Path(folder).expanduser()
@@ -190,8 +200,6 @@ class Preview(ttk.LabelFrame):
         self.sync_button.configure(state="disabled" if disabled else "normal")
         self.zoom_slider.configure(state="normal" if self.data is not None and not disabled else "disabled")
         self.reset_button.configure(state="normal" if self.data is not None and not disabled else "disabled")
-        for widget in self.channel_bar.winfo_children():
-            widget.configure(state="disabled" if disabled else "normal")
         ready = (self.matches_loaded() and self.selected_channels and not disabled and self.busy is None
                  and self.crop_drag is None and not self.sync.get())
         self.deconvolve_button.configure(state="normal" if ready else "disabled")
@@ -387,7 +395,6 @@ class Preview(ttk.LabelFrame):
                     self.data = value
                     self.crop = {axis: [0, size] for axis, size in zip("zyx", value["shape"])}
                     self.reset_view()
-                    self.build_channels()
                     self.recolor()
                     self.parameters_changed()
                 elif kind == "original_projection":
@@ -433,8 +440,6 @@ class Preview(ttk.LabelFrame):
 
     def recolor(self):
         if self.data is not None:
-            for widget, channel in zip(self.channel_bar.winfo_children(), self.data["channels"]):
-                widget.configure(text=self.channel_label(channel))
             self.images.clear()
             self.photos.clear()
             for canvas in self.canvases.values():
@@ -475,15 +480,21 @@ class Preview(ttk.LabelFrame):
         )
         return max(0, fit) * self.zoom.get() / 100
 
-    def slider_zoom(self, value):
+    def sync_zoom_control(self, *args):
+        self.zoom_position.set(MIN_ZOOM + MAX_ZOOM - self.zoom.get())
         self.zoom_label.set(f"{self.zoom.get():.0f}%")
+
+    def slider_zoom(self, value):
+        # Keep the native scale ascending (Aqua cannot reliably draw reversed
+        # ranges), while placing maximum magnification at the top.
+        self.zoom.set(MIN_ZOOM + MAX_ZOOM - float(value))
         self.schedule_draw()
 
     def set_zoom(self, value, key=None, x=None, y=None):
         if self.data is None or self.disabled:
             return
         old_scale = self.view_scale()
-        self.zoom.set(min(1600, max(10, value)))
+        self.zoom.set(min(MAX_ZOOM, max(MIN_ZOOM, value)))
         new_scale = self.view_scale()
         if key is not None and old_scale > 0 and new_scale > 0:
             canvas = self.canvases[key]
@@ -786,7 +797,6 @@ class Preview(ttk.LabelFrame):
         self.crop_drag = None
         self.end_pan()
         self.reset_view()
-        self.build_channels()
         self.busy = None
         self.cleanup_job()
         self.images.clear()

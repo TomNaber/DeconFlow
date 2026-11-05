@@ -41,6 +41,7 @@ def main():
     from source.edit_ims_channels import NAMED_COLORS
     from source.psf_channels import read_psf_channels
     from source.preview import Preview
+    from source.ui_style import workspace_background
 
     window = tk.Tk()
     window.title(f"Batch Deconvolution {__version__} — Richardson-Lucy and Gibson Lanni")
@@ -55,42 +56,52 @@ def main():
     cancelled = False
     events = queue.Queue()
 
-    workspace = ttk.Frame(window)
+    workspace = tk.Frame(window, background=workspace_background(window), borderwidth=0)
     workspace.pack(fill="both", expand=True)
-    workspace.columnconfigure(0, weight=55, uniform="panels")
-    workspace.columnconfigure(1, weight=45, uniform="panels")
+    workspace.bind("<Map>", lambda event: workspace.configure(background=workspace_background(window)))
+    # Keep controls compact; give additional window width to the preview.
+    workspace.columnconfigure(0, weight=0)
+    workspace.columnconfigure(1, weight=1)
     workspace.rowconfigure(0, weight=1)
-    settings_area = ttk.Frame(workspace)
-    settings_area.grid(row=0, column=0, sticky="nsew")
+    parameter_panel = ttk.LabelFrame(workspace, padding=8)
+    parameter_panel.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+    settings_area = parameter_panel
     settings_area.rowconfigure(0, weight=1)
     settings_area.columnconfigure(0, weight=1)
-    settings_canvas = tk.Canvas(settings_area, highlightthickness=0, width=1, height=1)
+    settings_canvas = tk.Canvas(settings_area, highlightthickness=0, width=580, height=1)
     settings_canvas.grid(row=0, column=0, sticky="nsew")
     vertical = ttk.Scrollbar(settings_area, orient="vertical", command=settings_canvas.yview)
     vertical.grid(row=0, column=1, sticky="ns")
-    horizontal = ttk.Scrollbar(settings_area, orient="horizontal", command=settings_canvas.xview)
-    horizontal.grid(row=1, column=0, sticky="ew")
-    settings_canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+    settings_canvas.configure(yscrollcommand=vertical.set)
     controls = ttk.Frame(settings_canvas)
     controls_item = settings_canvas.create_window(0, 0, window=controls, anchor="nw")
 
     def layout_controls(event=None):
-        settings_canvas.itemconfigure(controls_item, width=max(controls.winfo_reqwidth(), settings_canvas.winfo_width()))
+        # A notebook otherwise reserves the height of its tallest page.
+        notebook.configure(height=panels[mode.get()].winfo_reqheight())
+        available_height = settings_canvas.winfo_height()
+        content_height = controls.winfo_reqheight()
+        settings_canvas.itemconfigure(controls_item, width=settings_canvas.winfo_width(),
+                                      height=max(content_height, available_height))
         settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+        if controls.winfo_reqheight() > settings_canvas.winfo_height():
+            vertical.grid()
+        else:
+            vertical.grid_remove()
+            settings_canvas.yview_moveto(0)
 
     controls.bind("<Configure>", layout_controls)
     settings_canvas.bind("<Configure>", layout_controls)
-    toolbar = ttk.Frame(controls, padding=10)
-    toolbar.pack(fill="x")
+    notebook = ttk.Notebook(controls, padding=0)
+    notebook.pack(fill="x", pady=(10, 0))
     panels = {}
     mode_labels = {
         "Deconvolution": "Richardson-Lucy deconvolution",
-        "PSF generation": "Gibson Lanni point-spread function generation",
+        "PSF generation": "Gibson-Lanni PSF",
     }
     for title in mode_labels:
-        ttk.Radiobutton(toolbar, text=mode_labels[title], variable=mode, value=title,
-                        command=lambda: show_mode()).pack(side="left", padx=5)
-        panels[title] = ttk.Frame(controls, padding=10)
+        panels[title] = ttk.Frame(notebook, padding=10)
+        notebook.add(panels[title], text=mode_labels[title])
         fields[title] = {}
 
     def add_field(panel, group, row, name, label, default, kind=str, browse=None):
@@ -104,10 +115,10 @@ def main():
         if kind is bool:
             ttk.Checkbutton(holder, variable=variable).pack(side="left")
         elif name == "SCAN_DIRECTION":
-            ttk.Combobox(holder, textvariable=variable, values=("up", "down"),
-                         state="readonly", width=12).pack(fill="x")
+            ttk.Combobox(holder, textvariable=variable, values=("Up", "Down"),
+                         state="readonly", width=6).pack(side="left")
         else:
-            ttk.Entry(holder, textvariable=variable, width=18).pack(side="left", fill="x", expand=True)
+            ttk.Entry(holder, textvariable=variable, width=1).pack(side="left", fill="x", expand=True)
         if browse:
             def choose():
                 current = Path(variable.get().strip()).expanduser()
@@ -138,11 +149,12 @@ def main():
     for row, setting in enumerate(deconvolution):
         add_field(panels["Deconvolution"], "Deconvolution", row, *setting)
 
-    channel_panel = ttk.LabelFrame(panels["Deconvolution"], text="Channel pseudocolor", padding=8)
+    channel_panel = ttk.LabelFrame(panels["Deconvolution"], text="Select channels", padding=8)
     channel_panel.grid(row=len(deconvolution), column=0, columnspan=2, sticky="ew", pady=(10, 0))
     channel_panel.columnconfigure(1, weight=1)
     channel_preferences = {}
     channel_variables = {}
+    channel_row_updates = []
     active_channels = []
     psf_signature = []
     psf_overrides = {}
@@ -153,8 +165,10 @@ def main():
         events.put(f"Preview: {error}\n")
         messagebox.showerror("Preview failed", error.splitlines()[-1], parent=window)
 
-    preview = Preview(workspace, channel_preferences, lambda: refresh_channels(), preview_error)
-    preview.grid(row=0, column=1, sticky="nsew", padx=(4, 10), pady=10)
+    preview_panel = ttk.LabelFrame(workspace, padding=8)
+    preview_panel.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+    preview = Preview(preview_panel, channel_preferences, lambda: refresh_channels(), preview_error)
+    preview.pack(fill="both", expand=True)
 
     def preview_settings():
         if refresh_job is not None:
@@ -197,10 +211,12 @@ def main():
 
     def refresh_channels():
         nonlocal active_channels, refresh_job, psf_signature
+        window.after_idle(layout_controls)
         refresh_job = None
         for widget in channel_panel.winfo_children():
             widget.destroy()
         channel_variables.clear()
+        channel_row_updates.clear()
         psf_selections.clear()
         active_channels = []
         folder = Path(fields["Deconvolution"]["INPUT_DIR"][0].get()).expanduser()
@@ -212,7 +228,7 @@ def main():
             if not active_channels:
                 raise ValueError("No channels found in the selected input file.")
         except (OSError, KeyError, ValueError) as error:
-            ttk.Label(channel_panel, text=str(error), wraplength=950).grid(row=0, column=0, columnspan=4, sticky="w")
+            ttk.Label(channel_panel, text=str(error), wraplength=520).grid(row=0, column=0, columnspan=4, sticky="w")
             preview.parameters_changed()
             return
         signature = [channel["name"] for channel in active_channels]
@@ -231,25 +247,63 @@ def main():
                                 else f"{entry['name']} ({entry['psf_file']})")
             for entry in catalog
         }
+        heading_widths = {}
         for column, label in enumerate(("Input channel", "Output channel name", "PSF channel", "Pseudocolor")):
-            ttk.Label(channel_panel, text=label).grid(row=0, column=column, sticky="w", padx=5)
+            heading = ttk.Label(channel_panel, text=label)
+            heading.grid(row=0, column=column, sticky="w", padx=5)
+            heading_widths[column] = heading.winfo_reqwidth()
+
+        def channel_dropdown(row, column, variable, values):
+            holder = ttk.Frame(channel_panel, width=heading_widths[column] + 28)
+            holder.grid(row=row, column=column, sticky="ew", padx=5, pady=3)
+            dropdown = ttk.Combobox(holder, textvariable=variable, values=values,
+                                    state="readonly", width=1)
+            holder.configure(height=dropdown.winfo_reqheight())
+            holder.pack_propagate(False)
+            dropdown.pack(fill="x")
+            return dropdown
+
         for row, channel in enumerate(active_channels, start=1):
             key = str(channel["index"])
             preference = channel_preferences.setdefault(key, {"name": channel["name"], "color": "Original"})
+            enabled = tk.BooleanVar(value=preference.get("enabled", True))
             name = tk.StringVar(value=preference["name"])
             color = tk.StringVar(value=preference["color"])
             label = f"C{channel['index'] + 1}: {channel['name']}"
-            ttk.Label(channel_panel, text=label, wraplength=170).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-            ttk.Entry(channel_panel, textvariable=name, width=18).grid(row=row, column=1, sticky="ew", padx=5, pady=3)
+            input_cell = ttk.Frame(channel_panel)
+            input_cell.grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            selection = ttk.Checkbutton(input_cell, variable=enabled)
+            selection.pack(side="left")
+            ttk.Label(input_cell, text=label, wraplength=90).pack(side="left")
+            name_entry = ttk.Entry(channel_panel, textvariable=name, width=1)
+            name_entry.grid(row=row, column=1, sticky="ew", padx=5, pady=3)
             selected_file = psf_overrides.get(key, automatic.get(key))
             if key in psf_overrides and selected_file == automatic.get(key):
                 del psf_overrides[key]
             psf = tk.StringVar(value=labels.get(selected_file, f"Unavailable: {selected_file}" if selected_file else "No matching PSF"))
             psf_selections[key] = selected_file if selected_file in labels else None
-            ttk.Combobox(channel_panel, textvariable=psf, values=tuple(labels.values()),
-                         state="readonly", width=16).grid(row=row, column=2, padx=5, pady=3)
-            ttk.Combobox(channel_panel, textvariable=color, values=("Original", *NAMED_COLORS),
-                         state="readonly", width=14).grid(row=row, column=3, padx=5, pady=3)
+            psf_dropdown = channel_dropdown(row, 2, psf, tuple(labels.values()))
+            color_dropdown = channel_dropdown(row, 3, color, ("Original", *NAMED_COLORS))
+
+            def update_row(*args, key=key, enabled=enabled, name_entry=name_entry,
+                           psf_dropdown=psf_dropdown, color_dropdown=color_dropdown,
+                           selection=selection):
+                selected = enabled.get()
+                editable = selected and not preview.disabled
+                selection.configure(state="disabled" if preview.disabled else "normal")
+                name_entry.configure(state="normal" if editable else "disabled")
+                for dropdown in (psf_dropdown, color_dropdown):
+                    dropdown.configure(state="readonly" if editable else "disabled")
+                channel_preferences[key]["enabled"] = selected
+
+            def selection_changed(*args, update_row=update_row):
+                update_row()
+                save_settings()
+                preview.channels_changed()
+
+            channel_row_updates.append(update_row)
+            update_row()
+            enabled.trace_add("write", selection_changed)
 
             def psf_changed(*args, key=key, psf=psf):
                 filename = next(filename for filename, label in labels.items() if label == psf.get())
@@ -263,17 +317,17 @@ def main():
 
             psf.trace_add("write", psf_changed)
             # Keep the Tk variable alive for the lifetime of its dropdown.
-            channel_variables[key] = (name, color, psf)
+            channel_variables[key] = (name, color, psf, enabled)
 
             def changed(*args, key=key, name=name, color=color):
-                channel_preferences[key] = {"name": name.get(), "color": color.get()}
+                channel_preferences[key].update(name=name.get(), color=color.get())
                 save_settings()
                 preview.recolor()
 
             name.trace_add("write", changed)
             color.trace_add("write", changed)
         if psf_error:
-            ttk.Label(channel_panel, text=psf_error, wraplength=950).grid(
+            ttk.Label(channel_panel, text=psf_error, wraplength=520).grid(
                 row=len(active_channels) + 1, column=0, columnspan=4, sticky="w")
         save_settings()
         preview.parameters_changed()
@@ -288,12 +342,8 @@ def main():
     psf_panel = panels["PSF generation"]
     ttk.Checkbutton(psf_panel, text="Separate objective design and actual imaging conditions", variable=separate,
                     command=lambda: show_actual()).pack(anchor="w", pady=(0, 5))
-    columns = ttk.Frame(psf_panel)
-    columns.pack(fill="x")
-    left = ttk.Frame(columns)
-    right = ttk.Frame(columns)
-    left.pack(side="left", fill="both", expand=True, padx=(0, 20))
-    right.pack(side="left", fill="both", expand=True)
+    psf_settings = ttk.Frame(psf_panel)
+    psf_settings.pack(fill="x")
     psf_fields = [
         ("XY_PIXEL_SIZE_UM", "Lateral pixel size X/Y (µm)", 0.0801669, float),
         ("Z_STEP_UM", "Axial sampling interval Z (µm)", 0.3002, float),
@@ -305,10 +355,10 @@ def main():
         ("PSF_SIZE_Z", "Point-spread function Z size (planes)", 209, int),
         ("PSF_SIZE_XY", "Point-spread function X/Y size (pixels)", 119, int),
         ("OVERSAMPLE_FACTOR", "Calculation oversampling factor", 3, int),
-        ("SCAN_DIRECTION", "Axial scan direction (up/down)", "up", str),
+        ("SCAN_DIRECTION", "Axial scan direction", "Up", str),
     ]
     for row, setting in enumerate(psf_fields):
-        add_field(left, "PSF generation", row, *setting)
+        add_field(psf_settings, "PSF generation", row, *setting)
 
     pairs = [
         ("IMMERSION_RI_DESIGN", "IMMERSION_RI_ACTUAL", "Immersion refractive index", 1.4811),
@@ -317,28 +367,35 @@ def main():
     ]
     pair_widgets = []
     for index, (design, actual, label, default) in enumerate(pairs):
-        design_widgets = add_field(right, "PSF generation", index * 2, design, label, default, float)
-        actual_widgets = add_field(right, "PSF generation", index * 2 + 1, actual, label + " (actual)", default, float)
+        design_widgets = add_field(psf_settings, "PSF generation", len(psf_fields) + index * 2, design, label, default, float)
+        actual_widgets = add_field(psf_settings, "PSF generation", len(psf_fields) + index * 2 + 1, actual, label + " (actual)", default, float)
         pair_widgets.append((design_widgets[0], actual_widgets, label))
-    add_field(right, "PSF generation", 6, "OVERWRITE", "Overwrite existing point-spread functions", True, bool)
-    output = ttk.Frame(psf_panel)
-    output.pack(fill="x", pady=5)
-    add_field(output, "PSF generation", 0, "OUTPUT_DIR", "Output folder", WORKSPACE / "psfs/1000", str, "directory")
-    ttk.Label(psf_panel, text="Channels in image channel order: one per line, name, excitation wavelength (nm), emission wavelength (nm)").pack(anchor="w")
-    channels = ScrolledText(psf_panel, height=4, wrap="none")
+    add_field(psf_settings, "PSF generation", len(psf_fields) + len(pairs) * 2, "OVERWRITE", "Overwrite existing point-spread functions", True, bool)
+    add_field(psf_settings, "PSF generation", len(psf_fields) + len(pairs) * 2 + 1, "OUTPUT_DIR", "Output folder", WORKSPACE / "psfs/1000", str, "directory")
+    ttk.Label(psf_panel, wraplength=540, text="Channels in image channel order: one per line, name, excitation wavelength (nm), emission wavelength (nm)").pack(anchor="w")
+    channels = ScrolledText(psf_panel, width=1, height=4, wrap="none")
     channels.pack(fill="x", pady=5)
     channels.insert("1.0", "Alexa488, 488, 525\nAlexa568, 552, 603\nAlexa647, 638, 671")
 
     def show_actual():
+        window.after_idle(layout_controls)
         for caption, widgets, label in pair_widgets:
             caption.configure(text=label + (" (design)" if separate.get() else ""))
             for widget in widgets:
                 widget.grid() if separate.get() else widget.grid_remove()
 
     def show_mode():
-        for panel in panels.values():
-            panel.pack_forget()
-        panels[mode.get()].pack(fill="x", after=toolbar)
+        notebook.select(panels[mode.get()])
+        console.configure(height=12 if mode.get() == "Deconvolution" else 8)
+        window.after_idle(layout_controls)
+
+    def tab_changed(event=None):
+        selected = notebook.select()
+        for title, panel in panels.items():
+            if str(panel) == selected and mode.get() != title:
+                mode.set(title)
+                show_mode()
+                break
 
     if sys.platform == "darwin":
         data_dir = Path.home() / "Library" / "Application Support"
@@ -423,14 +480,15 @@ def main():
                 preference = json.loads(raw)
                 if (not key.isdigit() or not isinstance(preference, dict)
                         or not isinstance(preference.get("name"), str)
-                        or preference.get("color") not in ("Original", *NAMED_COLORS)):
+                        or preference.get("color") not in ("Original", *NAMED_COLORS)
+                        or not isinstance(preference.get("enabled", True), bool)):
                     raise ValueError("Invalid saved channel settings")
                 channel_preferences[key] = preference
         for group, entries in fields.items():
             for name, (variable, kind, _) in entries.items():
                 if settings.has_option(group, name):
                     value = settings.getboolean(group, name) if kind is bool else settings.get(group, name)
-                    variable.set(value)
+                    variable.set(value.capitalize() if name == "SCAN_DIRECTION" else value)
         separate.set(settings.getboolean("PSF generation", "separate_design_actual", fallback=False))
         saved_channels = json.loads(settings.get("PSF generation", "channels", fallback=json.dumps(default_channels)))
         if not isinstance(saved_channels, str):
@@ -499,7 +557,7 @@ def main():
                             raise ValueError()
                 except (ValueError, tk.TclError):
                     raise ValueError(f"Enter a valid value for {label}.") from None
-                settings[name] = value
+                settings[name] = value.lower() if name == "SCAN_DIRECTION" else value
             if group == "Deconvolution":
                 if refresh_job is not None:
                     window.after_cancel(refresh_job)
@@ -508,8 +566,12 @@ def main():
                     raise ValueError("Select an input folder with readable IMS channel metadata.")
                 settings["CHANNEL_EDITS"] = {}
                 settings["PSF_FILES"] = []
+                settings["CHANNEL_INDICES"] = []
                 for channel in active_channels:
                     key = str(channel["index"])
+                    if not channel_preferences[key].get("enabled", True):
+                        continue
+                    settings["CHANNEL_INDICES"].append(channel["index"])
                     if not psf_selections.get(key):
                         raise ValueError(f"Select an available PSF for C{int(key) + 1}.")
                     settings["PSF_FILES"].append(psf_selections[key])
@@ -623,12 +685,20 @@ def main():
     run_button.pack(side="left")
     cancel_button = ttk.Button(buttons, text="Cancel", command=cancel, state="disabled")
     cancel_button.pack(side="left", padx=5)
-    preview.on_activity = lambda: cancel_button.configure(
-        state="normal" if (process is not None and not cancelled) or preview.busy is not None else "disabled")
+    def update_activity():
+        cancel_button.configure(
+            state="normal" if (process is not None and not cancelled) or preview.busy is not None else "disabled")
+        for update_row in channel_row_updates:
+            update_row()
+
+    preview.on_activity = update_activity
     ttk.Button(buttons, text="Restore defaults", command=restore_defaults).pack(side="right")
-    ttk.Label(controls, text="Console").pack(anchor="w", padx=10)
-    console = ScrolledText(controls, width=40, height=12, state="disabled", wrap="word")
-    console.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+    console_area = ttk.Frame(controls)
+    console_area.pack(side="bottom", fill="both", expand=True, padx=10, pady=(18, 10))
+    ttk.Label(console_area, text="Console").pack(anchor="w")
+    console = ScrolledText(console_area, width=1, height=8, state="disabled", wrap="word")
+    console.pack(fill="both", expand=True, pady=(5, 0))
+    notebook.bind("<<NotebookTabChanged>>", tab_changed)
     show_actual()
     show_mode()
     window.protocol("WM_DELETE_WINDOW", close)

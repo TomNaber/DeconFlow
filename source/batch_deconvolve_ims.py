@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from time import perf_counter
 
 import bioio_bioformats
+import h5py
 import numpy as np
 import tifffile
 from bioio import BioImage
@@ -21,6 +22,7 @@ from ims_writer import write_imaris
 from edit_ims_channels import parse_color
 from psf_channels import read_psf_channels
 from console_progress import ProgressLine
+from channel_metadata import read_channels
 
 
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -38,6 +40,8 @@ FIJI_MEMORY = "12g"
 OVERWRITE = False
 CHANNEL_EDITS = {}
 PSF_FILES = []
+# None preserves automatic all-channel processing for command-line callers.
+CHANNEL_INDICES = None
 
 
 @contextmanager
@@ -60,6 +64,13 @@ def quiet_bioformats():
 
 
 def load_psfs():
+    if CHANNEL_INDICES is not None:
+        if (len(CHANNEL_INDICES) != len(set(CHANNEL_INDICES))
+                or any(type(index) is not int or index < 0 for index in CHANNEL_INDICES)
+                or len(CHANNEL_INDICES) != len(PSF_FILES)):
+            raise ValueError("Select one PSF for each unique channel index")
+        if not CHANNEL_INDICES:
+            return [], []
     channels = read_psf_channels(PSF_DIR)
     if PSF_FILES:
         by_file = {channel["psf_file"]: channel for channel in channels}
@@ -90,7 +101,7 @@ def voxel_size(reader):
     return float(size.Z), float(size.Y), float(size.X)
 
 
-def read_volume(reader, time_index, channel_index):
+def read_volume(reader, time_index, channel_index, *, preserve=False):
     with quiet_bioformats():
         raw = np.asarray(
             reader.get_image_dask_data(
@@ -100,6 +111,8 @@ def read_volume(reader, time_index, channel_index):
     if raw.dtype == np.int8:
         print("      WARNING: reinterpreting signed int8 bytes as uint8")
         raw = raw.view(np.uint8)
+    if preserve:
+        return np.ascontiguousarray(raw)
     image = np.asarray(raw, dtype=np.float32)
     np.nan_to_num(image, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     np.maximum(image, 0.0, out=image)
@@ -258,11 +271,22 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 f"C{channel_index + 1}/{n_channels} {name}"
             )
             print(f"{label}: preparing input...", flush=True)
-            image = read_volume(reader, time_index, channel_index)
-            result = run_fiji(image, psfs[channel_index], label)
-            stored = store_result(result)
-
-            saturated = int(np.count_nonzero(result > 65535))
+            preserve = psfs[channel_index] is None
+            image = read_volume(reader, time_index, channel_index, preserve=preserve)
+            if preserve:
+                print(f"{label}: keeping original channel", flush=True)
+                # IMS output is uint16. Widen uint8 losslessly, but never silently
+                # clip or round an excluded channel of an unsupported type.
+                if not np.can_cast(image.dtype, np.uint16, casting="safe"):
+                    raise ValueError(
+                        f"Cannot preserve {label} with dtype {image.dtype} in uint16 output")
+                result = image
+                stored = image.astype(np.uint16, copy=False)
+                saturated = 0
+            else:
+                result = run_fiji(image, psfs[channel_index], label)
+                stored = store_result(result)
+                saturated = int(np.count_nonzero(result > 65535))
             stored_max = int(stored.max())
             channel_maxima[channel_index] = max(
                 channel_maxima[channel_index], stored_max
@@ -277,6 +301,20 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
             del image, result, stored
             gc.collect()
     return [(0.0, float(maximum or 1)) for maximum in channel_maxima]
+
+
+def preserve_original_channel_metadata(input_path, output_path, indices):
+    """Restore original names, colors, display ranges and wavelengths for copies."""
+    if not indices:
+        return
+    with h5py.File(input_path, "r") as source, h5py.File(output_path, "r+") as output:
+        for index in indices:
+            name = f"Channel {index}"
+            metadata = f"DataSetInfo/{name}"
+            if metadata in source:
+                if metadata in output:
+                    del output[metadata]
+                source.copy(metadata, output["DataSetInfo"], name=name)
 
 
 def process_file(input_path, channels, psfs):
@@ -295,14 +333,30 @@ def process_file(input_path, channels, psfs):
     reader = None
     output = None
     try:
+        if CHANNEL_INDICES == []:
+            shutil.copy2(input_path, partial_path)
+            partial_path.replace(output_path)
+            print(f"Copied unchanged (no channels selected): {output_path.name}")
+            return
         reader = open_ims(input_path)
         shape = tuple(int(getattr(reader.dims, axis)) for axis in "TCZYX")
         n_t, n_c, _, _, _ = shape
-        if n_c > len(psfs):
-            raise ValueError(f"Image has {n_c} channels but only {len(psfs)} PSFs are available")
-        output_names = [channel["name"] for channel in channels[:n_c]]
+        selected = list(range(n_c)) if CHANNEL_INDICES is None else CHANNEL_INDICES
+        if any(index >= n_c for index in selected):
+            raise ValueError(f"Selected channel is absent from image with {n_c} channels")
+        if len(selected) > len(psfs):
+            raise ValueError(f"Image needs {len(selected)} PSFs but only {len(psfs)} are available")
+        original_channels = read_channels(input_path)
+        if [channel["index"] for channel in original_channels] != list(range(n_c)):
+            raise ValueError("Image channel numbering must be consecutive")
+        file_channels = [dict(channel) for channel in original_channels]
+        file_psfs = [None] * n_c
+        for position, index in enumerate(selected):
+            file_channels[index] = channels[position]
+            file_psfs[index] = psfs[position]
+        output_names = [channel["name"] for channel in file_channels]
         output_colors = [None] * n_c
-        for index in range(n_c):
+        for index in selected:
             edit = CHANNEL_EDITS.get(str(index), CHANNEL_EDITS.get(index, {}))
             if "name" in edit:
                 output_names[index] = edit["name"]
@@ -316,7 +370,7 @@ def process_file(input_path, channels, psfs):
         print(f"  Source channels: {reader.channel_names}")
 
         output = np.memmap(array_path, mode="w+", dtype=np.uint16, shape=shape)
-        channel_ranges = deconvolve(reader, output, channels, psfs, n_t, n_c)
+        channel_ranges = deconvolve(reader, output, file_channels, file_psfs, n_t, n_c)
         output.flush()
         reader = None
         gc.collect()
@@ -329,13 +383,15 @@ def process_file(input_path, channels, psfs):
             channel_colors=output_colors,
             channel_ranges=channel_ranges,
             excitation_wavelengths_nm=[
-                channel.get("excitation_nm") for channel in channels[:n_c]
+                channel.get("excitation_nm") for channel in file_channels
             ],
             emission_wavelengths_nm=[
-                channel.get("emission_nm") for channel in channels[:n_c]
+                channel.get("emission_nm") for channel in file_channels
             ],
             source_ims=input_path,
         )
+        excluded = [index for index in range(n_c) if index not in selected]
+        preserve_original_channel_metadata(input_path, partial_path, excluded)
         output_path.unlink(missing_ok=True)
         partial_path.replace(output_path)
         print(f"Finished: {output_path.name}")
@@ -352,11 +408,11 @@ def process_file(input_path, channels, psfs):
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    for path in (
+    for path in (() if CHANNEL_INDICES == [] else (
         FIJI_EXECUTABLE,
         SOURCE_DIR / "fiji_rltv_worker.py",
         SOURCE_DIR / "lib/totalvariationterm.cl",
-    ):
+    )):
         if not path.is_file():
             raise FileNotFoundError(path)
 
