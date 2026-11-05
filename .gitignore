@@ -8,3 +8,4 @@ psfs/*
 examples/*
 *__pycache__
 input/*
+dist/

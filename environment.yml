@@ -6,8 +6,6 @@ dependencies:
   - python=3.13
   - pip
   - tk
-  - hdf5=2.1
-  - lz4-c=1.10
   - openjdk=21
   - pip:
       - -r requirements.txt

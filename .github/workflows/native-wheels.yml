@@ -1,0 +1,56 @@
+name: Native wheel builds
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: macos-arm64
+          - runner: macos-15-intel
+            target: macos-x86_64
+          - runner: windows-2022
+            target: windows-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build writer and bundled dependencies
+        run: python vendor/imaris/build_wheel.py --target ${{ matrix.target }} --work-dir "${{ runner.temp }}/imaris-build" --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imaris-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  installation:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          auto-activate-base: true
+          activate-environment: ''
+      - name: Install using README command
+        run: conda env create -f environment.yml
+      - name: Check installed dependencies and native loading
+        run: |
+          conda run -n batch-deconvolution python -m pip check
+          conda run -n batch-deconvolution python -c "import ctypes, platform, pathlib, napari_vipp_imaris, psfmodels, source.preview; p = pathlib.Path(napari_vipp_imaris.__file__).parent; ctypes.CDLL(str(p / ('bpImarisWriter96.dll' if platform.system() == 'Windows' else 'libbpImarisWriter96.dylib'))); print(platform.system(), platform.machine(), 'native imports loaded')"

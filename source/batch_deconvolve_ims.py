@@ -16,6 +16,7 @@ import numpy as np
 import tifffile
 from bioio import BioImage
 
+from platform_support import default_fiji_executable
 from ims_writer import write_imaris
 from edit_ims_channels import parse_color
 from psf_channels import read_psf_channels
@@ -31,9 +32,7 @@ TEMP_DIR = ROOT / ".deconvolution_temp"
 ITERATIONS = 40
 RLTV_REGULARIZATION = 0.0001
 RLTV_NON_CIRCULANT = True
-FIJI_EXECUTABLE = Path(
-    "/Applications/Fiji/Fiji.app/Contents/MacOS/fiji-macos-arm64"
-)
+FIJI_EXECUTABLE = Path(default_fiji_executable())
 FIJI_MEMORY = "12g"
 OVERWRITE = False
 CHANNEL_EDITS = {}
@@ -125,7 +124,7 @@ def scijava_string(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def run_fiji(image, psf, label):
+def run_fiji_one_shot(image, psf, label):
     started = perf_counter()
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
         directory = Path(directory).resolve()
@@ -198,6 +197,48 @@ def run_fiji(image, psf, label):
         result = np.asarray(tifffile.imread(output_tif), dtype=np.float32).squeeze()
 
     print(f"      Fiji RL-TV completed in {duration(perf_counter() - started)}")
+    return np.ascontiguousarray(result)
+
+
+_session = None
+
+
+def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_path=None):
+    """Reuse Fiji; callers may supply immutable, already prepared TIFFs."""
+    from fiji_session import FijiClient, FijiSession
+    global _session
+    if session_directory is None:
+        key = (FIJI_EXECUTABLE.expanduser().resolve(), str(FIJI_MEMORY))
+        if (_session is None or _session.closed or _session.process.poll() is not None
+                or (_session.directory / "failed.json").exists()
+                or (_session.executable, _session.memory) != key):
+            if _session is not None:
+                _session.close()
+            _session = FijiSession(*key)
+        session_directory = _session.directory
+    started = perf_counter()
+    with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
+        directory = Path(directory)
+        staged = perf_counter()
+        if input_path is None:
+            input_path = directory / "input.tif"
+            tifffile.imwrite(input_path, np.ascontiguousarray(image, dtype=np.float32),
+                             photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
+        if psf_path is None:
+            psf_path = directory / "psf.tif"
+            tifffile.imwrite(psf_path, np.ascontiguousarray(psf, dtype=np.float32),
+                             photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
+        staged = perf_counter() - staged
+        output_path = directory / "output.tif"
+        timings = FijiClient(session_directory).run(input_path, psf_path, output_path,
+                                                   ITERATIONS, RLTV_REGULARIZATION, RLTV_NON_CIRCULANT)
+        read = perf_counter()
+        result = np.asarray(tifffile.imread(output_path), dtype=np.float32).squeeze()
+        timings["read"] = perf_counter() - read
+    timings["stage"] = staged
+    total = perf_counter() - started
+    print(f"      {label}: total={total:.3f}s; " + "; ".join(
+        f"{name}={seconds:.3f}s" for name, seconds in timings.items()), flush=True)
     return np.ascontiguousarray(result)
 
 

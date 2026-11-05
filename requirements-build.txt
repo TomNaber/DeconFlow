@@ -1,0 +1,2 @@
+conda-pack==0.8.1
+setuptools==80.9.0

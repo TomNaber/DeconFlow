@@ -1,9 +1,12 @@
 from contextlib import redirect_stdout, redirect_stderr
 import os
+import json
 from pathlib import Path
 import signal
 import sys
 import traceback
+from time import perf_counter
+import tifffile
 
 import h5py
 import numpy as np
@@ -72,80 +75,172 @@ class Log:
 
 def channel_settings(settings, index):
     indices = settings.get("CHANNEL_INDICES", list(range(len(settings["PSF_FILES"]))))
+    filename = dict(zip(indices, settings["PSF_FILES"]))[index]
+    path = Path(settings["PSF_DIR"]).expanduser() / filename
+    try:
+        stat = path.stat()
+        fingerprint = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    except OSError:
+        fingerprint = (str(path), None)
     return {
-        **{key: value for key, value in settings.items() if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES")},
-        "PSF_FILE": dict(zip(indices, settings["PSF_FILES"]))[index],
+        **{key: value for key, value in settings.items()
+           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE")},
+        "PSF_FILE": filename,
+        "PSF_FINGERPRINT": fingerprint,
     }
 
 
-def deconvolve_volume(volumes, original, settings, directory):
+class PreviewCache:
+    """One crop per source channel and one PSF/result per selected channel."""
+    def __init__(self, directory, volumes, original):
+        self.directory = Path(directory)
+        self.volumes = {c["index"]: (v, c) for v, c in zip(volumes, original["channels"])}
+        self.original = original
+        self.inputs = {}
+        self.psfs = {}
+        self.results = {}
+
+    def bounds(self, settings):
+        bounds = settings.get("CROP_BOUNDS", {a: [0, n] for a, n in zip("zyx", self.original["shape"])})
+        for axis, size in zip("zyx", self.original["shape"]):
+            low, high = bounds[axis]
+            if not isinstance(low, int) or not isinstance(high, int) or not 0 <= low < high <= size:
+                raise ValueError(f"Invalid {axis.upper()} crop bounds.")
+        return bounds
+
+    def prepare(self, settings, stale=lambda: False):
+        started = perf_counter()
+        bounds = self.bounds(settings)
+        crop_key = tuple(tuple(bounds[a]) for a in "zyx")
+        selected = settings["CHANNEL_INDICES"]
+        # Release deselected channels, keeping cache size independent of interaction history.
+        for cache in (self.inputs, self.psfs):
+            for index in list(cache):
+                if index not in selected:
+                    cache.pop(index)[1].unlink(missing_ok=True)
+        for index in list(self.results):
+            if index not in selected:
+                del self.results[index]
+        for index in selected:
+            if stale():
+                return
+            volume, _ = self.volumes[index]
+            if self.inputs.get(index, (None,))[0] != crop_key:
+                image = np.array(volume[tuple(slice(*bounds[a]) for a in "zyx")],
+                                 dtype=np.float32, copy=True, order="C")
+                np.nan_to_num(image, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+                np.maximum(image, 0.0, out=image)
+                path = self.directory / f"input-{index}.tif"
+                tifffile.imwrite(path, image, photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
+                self.inputs[index] = (crop_key, path)
+                del image
+            fingerprint = channel_settings(settings, index)["PSF_FINGERPRINT"]
+            if self.psfs.get(index, (None,))[0] != fingerprint:
+                psf = np.asarray(tifffile.imread(fingerprint[0]), dtype=np.float32).squeeze()
+                np.nan_to_num(psf, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+                np.maximum(psf, 0.0, out=psf)
+                psf /= psf.sum(dtype=np.float64)
+                path = self.directory / f"psf-{index}.tif"
+                tifffile.imwrite(path, np.ascontiguousarray(psf), photometric="minisblack",
+                                 metadata={"axes": "ZYX"}, bigtiff=True)
+                self.psfs[index] = (fingerprint, path)
+        print(f"Preview input preparation: {perf_counter() - started:.3f}s", flush=True)
+
+
+def deconvolve_volume(cache, settings, directory, emit, stale):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import batch_deconvolve_ims as batch
 
-    for name, value in settings.items():
-        if name in ("CHANNEL_INDICES", "CROP_BOUNDS"):
-            continue
+    for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_EXECUTABLE", "FIJI_MEMORY"):
+        value = settings[name]
         if isinstance(getattr(batch, name), Path):
             value = Path(value).expanduser()
         setattr(batch, name, value)
     batch.TEMP_DIR = Path(directory)
-    if not batch.FIJI_EXECUTABLE.is_file():
-        raise FileNotFoundError(batch.FIJI_EXECUTABLE)
-    channels, psfs = batch.load_psfs()
-    selected = settings.get("CHANNEL_INDICES", [channel["index"] for channel in original["channels"]])
-    if not selected or len(psfs) != len(selected):
+    selected = settings["CHANNEL_INDICES"]
+    if not selected or len(settings["PSF_FILES"]) != len(selected):
         raise ValueError("Select one PSF for each selected channel.")
-    loaded = {channel["index"]: (volume, channel) for volume, channel in zip(volumes, original["channels"])}
-    bounds = settings.get("CROP_BOUNDS", {axis: [0, size] for axis, size in zip("zyx", original["shape"])})
-    for axis, size in zip("zyx", original["shape"]):
-        low, high = bounds[axis]
-        if not isinstance(low, int) or not isinstance(high, int) or not 0 <= low < high <= size:
-            raise ValueError(f"Invalid {axis.upper()} crop bounds.")
-    slices = tuple(slice(*bounds[axis]) for axis in "zyx")
-    output = []
+    cache.prepare(settings, stale)
+    bounds = cache.bounds(settings)
     projections = []
-    for index, psf in zip(selected, psfs):
-        volume, channel = loaded[index]
-        volume = volume[slices]
-        image = np.array(volume, dtype=np.float32, copy=True, order="C")
-        np.nan_to_num(image, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        np.maximum(image, 0.0, out=image)
-        result = batch.run_fiji(image, psf, f"Preview C{channel['index'] + 1} {channel['name']}")
-        if result.size != volume.size:
-            raise ValueError("Deconvolution returned an unexpected image size.")
-        stored = batch.store_result(result.reshape(volume.shape))
-        output.append(stored)
-        projections.append({**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T,
-                            "processing": channel_settings(settings, index)})
-        del image, result
-    return output, {**original, "channels": projections, "settings": settings, "crop": bounds}
+    public_settings = {key: value for key, value in settings.items() if key not in ("FIJI_SESSION", "FORCE")}
+    for index in selected:
+        if stale():
+            break
+        _, channel = cache.volumes[index]
+        processing = channel_settings(settings, index)
+        processing["PSF_FINGERPRINT"] = cache.psfs[index][0]
+        previous = cache.results.get(index)
+        if not settings.get("FORCE", False) and previous is not None and previous["processing"] == processing:
+            projection = previous
+            print(f"Preview C{index + 1}: using cached result", flush=True)
+        else:
+            result = batch.run_fiji(None, None, f"Preview C{index + 1} {channel['name']}",
+                                   session_directory=settings["FIJI_SESSION"],
+                                   input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1])
+            shape = tuple(bounds[a][1] - bounds[a][0] for a in "zyx")
+            if result.size != np.prod(shape):
+                raise ValueError("Deconvolution returned an unexpected image size.")
+            started = perf_counter()
+            stored = batch.store_result(result.reshape(shape))
+            projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T,
+                          "processing": processing}
+            cache.results[index] = projection
+            del result, stored
+            print(f"Preview C{index + 1} conversion/projections: {perf_counter() - started:.3f}s", flush=True)
+        projections.append(projection)
+        if not stale():
+            emit({**cache.original, "channels": list(projections), "settings": public_settings, "crop": bounds})
+    return {**cache.original, "channels": projections, "settings": public_settings, "crop": bounds}
 
 
-def run(connection, path):
-    os.setsid()
+def run(connection, path, cache_directory):
+    if os.name != "nt":
+        os.setsid()
 
     def stop(signum, frame):
         raise SystemExit(130)
 
     signal.signal(signal.SIGTERM, stop)
+    revision_path = Path(cache_directory) / "revision"
+
+    def stale(revision):
+        try:
+            return json.loads(revision_path.read_text()) != str(revision)
+        except OSError:
+            return True
+
     try:
+        started = perf_counter()
         volumes, projection = load_volume(path)
+        cache = PreviewCache(cache_directory, volumes, projection)
+        connection.send(("log", f"Preview source load/projections: {perf_counter() - started:.3f}s\n"))
         connection.send(("loaded", projection))
-        output = {}
         while True:
             request = connection.recv()
             if request == "close":
                 break
             if request == "clear_result":
-                output.clear()
+                cache.results.clear()
+                continue
+            if request[0] == "prepare":
+                _, revision, settings = request
+                if not stale(revision):
+                    try:
+                        with redirect_stdout(Log(connection)), redirect_stderr(Log(connection)):
+                            cache.prepare(settings, lambda: stale(revision))
+                    except Exception as error:
+                        connection.send(("log", f"Preview preparation deferred: {error}\n"))
                 continue
             revision, settings, directory = request
             try:
                 with redirect_stdout(Log(connection)), redirect_stderr(Log(connection)):
-                    processed, result = deconvolve_volume(volumes, projection, settings, directory)
-                output.update({channel["index"]: volume for channel, volume in zip(result["channels"], processed)})
+                    result = deconvolve_volume(
+                        cache, settings, directory,
+                        lambda result: connection.send(("channel", (revision, result))),
+                        lambda: stale(revision),
+                    )
                 connection.send(("deconvolved", (revision, result)))
-                del result, processed
             except Exception:
                 connection.send(("failed", (revision, traceback.format_exc())))
     except (EOFError, BrokenPipeError):

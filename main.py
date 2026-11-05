@@ -10,8 +10,12 @@ import subprocess
 import sys
 import threading
 
+from app_version import __version__
+
+from source.platform_support import default_fiji_executable, process_session_options, stop_process_tree
 
 ROOT = Path(__file__).resolve().parent
+WORKSPACE = Path(os.environ.get("BATCH_DECONVOLUTION_WORKSPACE", ROOT))
 
 
 def run_worker():
@@ -39,7 +43,7 @@ def main():
     from source.preview import Preview
 
     window = tk.Tk()
-    window.title("Richardson-Lucy deconvolution and Gibson Lanni point-spread functions")
+    window.title(f"Batch Deconvolution {__version__} — Richardson-Lucy and Gibson Lanni")
     width = min(1700, (window.winfo_screenwidth() or 1760) - 60)
     height = min(1000, (window.winfo_screenheight() or 1100) - 100)
     window.geometry(f"{width}x{height}")
@@ -120,11 +124,11 @@ def main():
         return caption, holder
 
     deconvolution = [
-        ("INPUT_DIR", "Input folder (Imaris .ims files)", ROOT / "examples", str, "directory"),
-        ("PSF_DIR", "Point-spread function folder", ROOT / "psfs", str, "directory"),
-        ("OUTPUT_DIR", "Output folder", ROOT / "dcv", str, "directory"),
-        ("TEMP_DIR", "Temporary working folder", ROOT / ".deconvolution_temp", str, "directory"),
-        ("FIJI_EXECUTABLE", "Fiji executable", "/Applications/Fiji/Fiji.app/Contents/MacOS/fiji-macos-arm64", str, "file"),
+        ("INPUT_DIR", "Input folder (Imaris .ims files)", WORKSPACE / "examples", str, "directory"),
+        ("PSF_DIR", "Point-spread function folder", WORKSPACE / "psfs", str, "directory"),
+        ("OUTPUT_DIR", "Output folder", WORKSPACE / "dcv", str, "directory"),
+        ("TEMP_DIR", "Temporary working folder", WORKSPACE / ".deconvolution_temp", str, "directory"),
+        ("FIJI_EXECUTABLE", "Fiji executable", default_fiji_executable(), str, "file"),
         ("FIJI_MEMORY", "Fiji memory limit (e.g. 12g = 12 GB)", "12g", str, None),
         ("ITERATIONS", "Richardson-Lucy iterations", 40, int, None),
         ("RLTV_REGULARIZATION", "Total-variation regularization", 0.0001, float, None),
@@ -185,6 +189,7 @@ def main():
         return settings
 
     preview.get_settings = preview_settings
+    preview.get_temp_directory = lambda: fields["Deconvolution"]["TEMP_DIR"][0].get().strip() or None
     preview.on_log = events.put
 
     def refresh_channels():
@@ -315,7 +320,7 @@ def main():
     add_field(right, "PSF generation", 6, "OVERWRITE", "Overwrite existing point-spread functions", True, bool)
     output = ttk.Frame(psf_panel)
     output.pack(fill="x", pady=5)
-    add_field(output, "PSF generation", 0, "OUTPUT_DIR", "Output folder", ROOT / "psfs/1000", str, "directory")
+    add_field(output, "PSF generation", 0, "OUTPUT_DIR", "Output folder", WORKSPACE / "psfs/1000", str, "directory")
     ttk.Label(psf_panel, text="Channels in image channel order: one per line, name, excitation wavelength (nm), emission wavelength (nm)").pack(anchor="w")
     channels = ScrolledText(psf_panel, height=4, wrap="none")
     channels.pack(fill="x", pady=5)
@@ -446,6 +451,28 @@ def main():
     fields["Deconvolution"]["PSF_DIR"][0].trace_add("write", schedule_channel_refresh)
     for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_EXECUTABLE", "FIJI_MEMORY"):
         fields["Deconvolution"][name][0].trace_add("write", preview.parameters_changed)
+    fiji_init_job = None
+
+    def initialize_fiji():
+        nonlocal fiji_init_job
+        fiji_init_job = None
+        if process is not None:
+            return
+        try:
+            preview.configure_fiji(fields["Deconvolution"]["FIJI_EXECUTABLE"][0].get().strip(),
+                                   fields["Deconvolution"]["FIJI_MEMORY"][0].get().strip())
+        except (OSError, ValueError) as error:
+            events.put(f"{error}\n")
+
+    def schedule_fiji_initialization(*args):
+        nonlocal fiji_init_job
+        if fiji_init_job is not None:
+            window.after_cancel(fiji_init_job)
+        fiji_init_job = window.after(500, initialize_fiji)
+
+    for name in ("FIJI_EXECUTABLE", "FIJI_MEMORY"):
+        fields["Deconvolution"][name][0].trace_add("write", schedule_fiji_initialization)
+    schedule_fiji_initialization()
     refresh_channels()
     save_settings()
 
@@ -508,10 +535,11 @@ def main():
                 if not settings["CHANNELS"]:
                     raise ValueError("Enter at least one channel.")
             preview.clear()
+            preview.stop_fiji()
             process = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--worker"],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        text=True, encoding="utf-8", errors="replace", cwd=ROOT,
-                                       start_new_session=True)
+                                       **process_session_options())
             process.stdin.write(json.dumps(settings))
             process.stdin.close()
         except (ValueError, OSError) as error:
@@ -535,18 +563,12 @@ def main():
         cancel_button.configure(state="disabled")
         events.put("\nCancelling...\n")
         child = process
-        try:
-            os.killpg(child.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        stop_process_tree(child.pid)
         window.after(2000, lambda: force_stop(child))
 
     def force_stop(child):
-        if process is child:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        if process is child and child.poll() is None:
+            stop_process_tree(child.pid, force=True)
 
     def read_output(child):
         for line in child.stdout:
@@ -567,6 +589,7 @@ def main():
                 run_button.configure(state="normal")
                 cancel_button.configure(state="disabled")
                 preview.set_disabled(False)
+                schedule_fiji_initialization()
                 refresh_channels()
             console.configure(state="normal")
             console.insert("end", item)
@@ -601,4 +624,7 @@ def main():
 
 
 if __name__ == "__main__":
-    run_worker() if "--worker" in sys.argv else main()
+    if "--version" in sys.argv:
+        print(__version__)
+    else:
+        run_worker() if "--worker" in sys.argv else main()

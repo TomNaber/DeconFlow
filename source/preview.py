@@ -1,10 +1,9 @@
 import multiprocessing
 import json
-import os
 from pathlib import Path
 import queue
-import signal
 import sys
+from time import perf_counter
 from tempfile import TemporaryDirectory
 import threading
 import tkinter as tk
@@ -17,6 +16,8 @@ from PIL.PngImagePlugin import PngInfo
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
 from source.preview_gestures import install_pinch
+from source.fiji_session import FijiSession, atomic_json
+from source.platform_support import stop_process_tree
 
 
 def composite(channels, axis, preferences):
@@ -37,6 +38,7 @@ class Preview(ttk.LabelFrame):
         self.on_select = on_select
         self.on_error = on_error
         self.get_settings = None
+        self.get_temp_directory = lambda: None
         self.on_activity = lambda: None
         self.on_log = lambda value: None
         self.folder = None
@@ -55,6 +57,10 @@ class Preview(ttk.LabelFrame):
         self.running = None
         self.sync_job = None
         self.job_directory = None
+        self.cache_directory = None
+        self.prepare_job = None
+        self.fiji_session = None
+        self.request_started = None
         self.sync = tk.BooleanVar(value=False)
         self.images = {}
         self.photos = {}
@@ -139,7 +145,7 @@ class Preview(ttk.LabelFrame):
 
     def channels_changed(self):
         self.recolor()
-        self.sync_changed()
+        self.parameters_changed()
 
     def set_folder(self, folder):
         self.folder = Path(folder).expanduser()
@@ -172,11 +178,45 @@ class Preview(ttk.LabelFrame):
         return (self.data is not None and self.selected_path is not None
                 and self.selected_path.resolve() == Path(self.data["path"]).resolve())
 
+    def configure_fiji(self, executable, memory):
+        key = (Path(executable).expanduser().resolve(), str(memory))
+        session = self.fiji_session
+        if (session is not None and not session.closed and session.process.poll() is None
+                and not (session.directory / "failed.json").exists()
+                and (session.executable, session.memory) == key):
+            return session
+        self.stop_fiji()
+        self.fiji_session = FijiSession(*key, log=lambda line: self.events.put(
+            (None, ("session_log", line))))
+        return self.fiji_session
+
+    def stop_fiji(self):
+        if self.fiji_session is not None:
+            self.fiji_session.close()
+            self.fiji_session = None
+
+    def prepare_inputs(self):
+        self.prepare_job = None
+        if (not self.matches_loaded() or self.disabled or self.busy is not None or self.crop_drag is not None
+                or not self.selected_channels or self.get_settings is None):
+            return
+        try:
+            settings = self.get_settings()
+            settings["CROP_BOUNDS"] = {a: list(b) for a, b in self.crop.items()}
+            self.connection.send(("prepare", self.revision, settings))
+        except (ValueError, OSError, EOFError, tk.TclError):
+            pass  # Missing PSF/settings are reported on an explicit preview request.
+
     def parameters_changed(self, *args):
         self.revision += 1
         self.sync_changed()
 
     def sync_changed(self):
+        if self.cache_directory is not None:
+            atomic_json(Path(self.cache_directory.name, "revision"), str(self.revision))
+        if self.prepare_job is not None:
+            self.after_cancel(self.prepare_job)
+        self.prepare_job = self.after(250, self.prepare_inputs)
         self.pending = None
         if self.sync_job is not None:
             self.after_cancel(self.sync_job)
@@ -212,6 +252,7 @@ class Preview(ttk.LabelFrame):
                 if all(index in running["CHANNEL_INDICES"] and channel_settings(running, index) == value
                        for index, value in processing.items()):
                     return
+        settings["FORCE"] = not automatic
         self.pending = (self.revision, settings)
         self.start_pending()
 
@@ -224,6 +265,9 @@ class Preview(ttk.LabelFrame):
             directory = Path(settings["TEMP_DIR"]).expanduser()
             directory.mkdir(parents=True, exist_ok=True)
             self.job_directory = TemporaryDirectory(prefix="preview-", dir=directory)
+            session = self.configure_fiji(settings["FIJI_EXECUTABLE"], settings["FIJI_MEMORY"])
+            settings["FIJI_SESSION"] = str(session.directory)
+            self.request_started = perf_counter()
             self.connection.send((revision, settings, self.job_directory.name))
             self.running = (revision, settings)
             self.busy = "deconvolve"
@@ -245,13 +289,22 @@ class Preview(ttk.LabelFrame):
         self.clear()
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
-        self.process = context.Process(target=run, args=(child, str(path)), daemon=True)
         try:
+            directory = self.get_temp_directory()
+            if directory:
+                directory = Path(directory).expanduser()
+                directory.mkdir(parents=True, exist_ok=True)
+            self.cache_directory = TemporaryDirectory(prefix="preview-cache-", dir=directory)
+            atomic_json(Path(self.cache_directory.name, "revision"), str(self.revision))
+            self.process = context.Process(target=run, args=(child, str(path), self.cache_directory.name), daemon=True)
             self.process.start()
         except Exception as error:
             self.process = None
             self.connection.close()
             self.connection = None
+            if self.cache_directory is not None:
+                self.cache_directory.cleanup()
+                self.cache_directory = None
             self.on_error(str(error))
             return
         finally:
@@ -274,6 +327,9 @@ class Preview(ttk.LabelFrame):
         try:
             while True:
                 generation, (kind, value) = self.events.get_nowait()
+                if kind == "session_log":
+                    self.on_log(value)
+                    continue
                 if generation != self.generation:
                     continue
                 if kind == "log":
@@ -290,23 +346,32 @@ class Preview(ttk.LabelFrame):
                     self.views.columnconfigure(1, weight=max(1, round(1000 * z * dz / (x * dx + z * dz))))
                     self.recolor()
                     self.parameters_changed()
-                elif kind in ("deconvolved", "failed"):
-                    self.busy = None
-                    self.running = None
-                    self.cleanup_job()
+                elif kind in ("channel", "deconvolved", "failed"):
                     revision, result = value
+                    if kind != "channel":
+                        self.busy = None
+                        self.running = None
+                        self.cleanup_job()
                     if revision == self.revision and self.matches_loaded():
-                        if kind == "deconvolved":
-                            cached = {channel["index"]: channel for channel in self.deconvolved["channels"]} if self.deconvolved else {}
-                            cached.update({channel["index"]: channel for channel in result["channels"]})
-                            result["channels"] = [cached[index] for index in sorted(cached)]
+                        if kind in ("channel", "deconvolved"):
+                            # Each message contains only compatible channels from this request.
                             self.deconvolved = result
+                            started = perf_counter()
                             self.recolor()
-                            self.on_log("Preview finished.\n")
+                            if kind == "channel":
+                                elapsed = perf_counter() - self.request_started
+                                self.on_log(f"Preview {len(result['channels'])}/{len(result['settings']['CHANNEL_INDICES'])} "
+                                            f"channels ready: {elapsed:.3f}s; draw={perf_counter() - started:.3f}s.\n")
+                            else:
+                                self.on_log("Preview finished.\n")
                         else:
+                            self.stop_fiji()
                             self.on_error(result)
                     self.update_controls()
-                    self.start_pending()
+                    if kind != "channel":
+                        self.start_pending()
+                        if self.busy is None and revision != self.revision:
+                            self.prepare_inputs()
                 else:
                     self.clear()
                     self.on_error(value)
@@ -585,6 +650,11 @@ class Preview(ttk.LabelFrame):
             self.on_error(str(error))
 
     def clear(self):
+        if self.busy == "deconvolve":
+            self.stop_fiji()
+        if self.prepare_job is not None:
+            self.after_cancel(self.prepare_job)
+            self.prepare_job = None
         self.generation += 1
         self.revision += 1
         self.pending = None
@@ -595,16 +665,10 @@ class Preview(ttk.LabelFrame):
         if self.process is not None:
             pid = self.process.pid
             if self.process.is_alive():
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    self.process.terminate()
+                stop_process_tree(pid)
             self.process.join(timeout=2)
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
             if self.process.is_alive():
+                stop_process_tree(pid, force=True)
                 self.process.kill()
                 self.process.join()
             self.process.close()
@@ -620,6 +684,9 @@ class Preview(ttk.LabelFrame):
                 self.events.get_nowait()
             except queue.Empty:
                 break
+        if self.cache_directory is not None:
+            self.cache_directory.cleanup()
+            self.cache_directory = None
         self.data = None
         self.deconvolved = None
         self.crop = None
@@ -636,6 +703,7 @@ class Preview(ttk.LabelFrame):
         self.set_disabled(self.disabled)
 
     def close(self):
+        self.stop_fiji()
         self.remove_pinch()
         if self.draw_job is not None:
             self.after_cancel(self.draw_job)
