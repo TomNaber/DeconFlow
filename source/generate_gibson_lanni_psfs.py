@@ -3,10 +3,13 @@
 import json
 import re
 from pathlib import Path
+from time import monotonic
 
 import numpy as np
 import psfmodels as psfm
 import tifffile
+
+from console_progress import ProgressLine
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,10 +43,7 @@ OVERWRITE = True
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(
-        f"PSF sampling: dz={Z_STEP_UM:g} µm, "
-        f"dy={XY_PIXEL_SIZE_UM:g} µm, dx={XY_PIXEL_SIZE_UM:g} µm"
-    )
+    started = monotonic()
 
     manifest = {
         "model": "confocal scalar Gibson-Lanni",
@@ -74,51 +74,52 @@ def main():
             }
         )
 
+        label = f"Channel {index + 1}/{len(CHANNELS)} ({name})"
         if output_path.exists() and not OVERWRITE:
-            print(f"Skipping existing: {filename}")
+            print(f"{label} skipped (already exists).", flush=True)
             continue
 
-        print(f"Generating channel {index + 1}/{len(CHANNELS)}: {name}")
-        psf = psfm.confocal_psf(
-            z=PSF_SIZE_Z,
-            nx=PSF_SIZE_XY,
-            dxy=XY_PIXEL_SIZE_UM,
-            dz=Z_STEP_UM,
-            pz=IMAGING_DEPTH_UM,
-            pinhole_au=PINHOLE_AIRY_UNITS,
-            NA=NUMERICAL_APERTURE,
-            ex_wvl=channel["excitation_nm"] / 1000.0,
-            em_wvl=channel["emission_nm"] / 1000.0,
-            ns=SPECIMEN_RI,
-            ni=IMMERSION_RI_ACTUAL,
-            ni0=IMMERSION_RI_DESIGN,
-            tg=COVERSLIP_THICKNESS_ACTUAL_UM,
-            tg0=COVERSLIP_THICKNESS_DESIGN_UM,
-            ng=COVERSLIP_RI_ACTUAL,
-            ng0=COVERSLIP_RI_DESIGN,
-            ti0=OBJECTIVE_WORKING_DISTANCE_UM,
-            oversample_factor=OVERSAMPLE_FACTOR,
-            model="scalar",
-        )
-        psf = np.asarray(psf, dtype=np.float32)
-        np.nan_to_num(psf, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        np.maximum(psf, 0.0, out=psf)
-        psf /= psf.sum(dtype=np.float64)
-        if SCAN_DIRECTION == "down":
-            psf = np.ascontiguousarray(psf[::-1])
+        with ProgressLine(label, activity="PSF generation").running():
+            psf = psfm.confocal_psf(
+                z=PSF_SIZE_Z,
+                nx=PSF_SIZE_XY,
+                dxy=XY_PIXEL_SIZE_UM,
+                dz=Z_STEP_UM,
+                pz=IMAGING_DEPTH_UM,
+                pinhole_au=PINHOLE_AIRY_UNITS,
+                NA=NUMERICAL_APERTURE,
+                ex_wvl=channel["excitation_nm"] / 1000.0,
+                em_wvl=channel["emission_nm"] / 1000.0,
+                ns=SPECIMEN_RI,
+                ni=IMMERSION_RI_ACTUAL,
+                ni0=IMMERSION_RI_DESIGN,
+                tg=COVERSLIP_THICKNESS_ACTUAL_UM,
+                tg0=COVERSLIP_THICKNESS_DESIGN_UM,
+                ng=COVERSLIP_RI_ACTUAL,
+                ng0=COVERSLIP_RI_DESIGN,
+                ti0=OBJECTIVE_WORKING_DISTANCE_UM,
+                oversample_factor=OVERSAMPLE_FACTOR,
+                model="scalar",
+            )
+            psf = np.asarray(psf, dtype=np.float32)
+            np.nan_to_num(psf, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+            np.maximum(psf, 0.0, out=psf)
+            psf /= psf.sum(dtype=np.float64)
+            if SCAN_DIRECTION == "down":
+                psf = np.ascontiguousarray(psf[::-1])
 
-        tifffile.imwrite(
-            output_path,
-            psf,
-            imagej=True,
-            metadata={"axes": "ZYX", "spacing": Z_STEP_UM, "unit": "um"},
-            resolution=(1.0 / XY_PIXEL_SIZE_UM, 1.0 / XY_PIXEL_SIZE_UM),
-        )
-        print(f"  Saved {filename}")
+            tifffile.imwrite(
+                output_path,
+                psf,
+                imagej=True,
+                metadata={"axes": "ZYX", "spacing": Z_STEP_UM, "unit": "um"},
+                resolution=(1.0 / XY_PIXEL_SIZE_UM, 1.0 / XY_PIXEL_SIZE_UM),
+            )
 
     manifest_path = OUTPUT_DIR / "psf_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"Saved manifest: {manifest_path}")
+    print(f"PSF generation completed in {monotonic() - started:.1f}s. "
+          f"Output: {OUTPUT_DIR}", flush=True)
 
 
 if __name__ == "__main__":
