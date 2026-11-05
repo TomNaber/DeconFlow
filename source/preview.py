@@ -147,6 +147,13 @@ class Preview(ttk.LabelFrame):
     def selected_channels(self):
         return [index for index, variable in self.channel_variables.items() if variable.get()]
 
+    def channel_label(self, channel):
+        index = channel["index"]
+        name = self.preferences.get(str(index), {}).get("name")
+        if not name or not name.strip():
+            name = channel["name"]
+        return f"C{index + 1}: {name}"
+
     def build_channels(self):
         for widget in self.channel_bar.winfo_children():
             widget.destroy()
@@ -156,7 +163,7 @@ class Preview(ttk.LabelFrame):
                 index = channel["index"]
                 variable = tk.BooleanVar(value=True)
                 self.channel_variables[index] = variable
-                ttk.Checkbutton(self.channel_bar, text=f"C{index + 1}: {channel['name']}",
+                ttk.Checkbutton(self.channel_bar, text=self.channel_label(channel),
                                 variable=variable, command=self.channels_changed).grid(
                                     row=position // 3, column=position % 3, sticky="w", padx=(0, 8))
 
@@ -426,6 +433,8 @@ class Preview(ttk.LabelFrame):
 
     def recolor(self):
         if self.data is not None:
+            for widget, channel in zip(self.channel_bar.winfo_children(), self.data["channels"]):
+                widget.configure(text=self.channel_label(channel))
             self.images.clear()
             self.photos.clear()
             for canvas in self.canvases.values():
