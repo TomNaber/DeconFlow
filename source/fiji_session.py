@@ -71,7 +71,7 @@ class FijiSession:
 
     def _read_log(self):
         for line in self.process.stdout:
-            if not self.closed:
+            if not self.closed and line.strip():
                 self.log('Fiji: ' + line)
         self.process.stdout.close()
         status = self.process.wait()

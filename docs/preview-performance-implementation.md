@@ -41,3 +41,24 @@ Additional completed checks:
 - Python syntax compilation and `git diff --check` passed.
 
 Full-volume batch file writing was not repeated: the writer is unchanged. Verification exercises the shared persistent numerical path, but does not establish bitwise equivalence for every image/GPU/settings combination. Full-volume Fiji RAM caching, shared memory, GPU buffer caching, and algorithm-internal FFT changes remain deliberately unimplemented; measured TIFF staging cost did not justify them.
+
+## Follow-up: crop-dependent stalls and logging (5 November 2026)
+
+Removed all routine `Preview input preparation` messages, including cache-hit messages, and suppressed blank Fiji log lines.
+
+The reported 35.720 s was inside the plugin call, versus 2.613 s for the earlier crop. Input preparation, opening, transfers, and output saving did not account for the spike. The previous wrapper called `clij2fftWrapper.cleanup()` after every channel. Inspection of the installed 2.2.0.22 macOS arm64 native library confirms that this function calls `clfftTeardown()`. The native low-pointer convolution/deconvolution paths destroy their own plans; their compiled-program resources need not be torn down after every successful channel.
+
+The worker now retains clFFT resources across successful calls, with a limit of eight FFT geometry/mode keys. Before admitting a ninth key it clears this cache; it also clears on a failed job and normal worker-loop termination. Forced process termination releases the process's resources. Image buffers are still closed and CLIJ2 cleared on every job. No library, algorithm, numerical argument, crop extent, or padding rule was changed.
+
+When crop/PSF dimensions change, a single diagnostic reports input XYZ, PSF XYZ, and the padded FFT XYZ dimensions, using the installed ImageJ FFT-size operation. It distinguishes a previously used FFT geometry from a first use. JVM garbage-collection time is reported only if it exceeds 0.1 s during the algorithm call. This helps investigate future spikes without printing repeated preparation/cache-hit timings.
+
+Verification used temporary scripts outside the repository, not added project tests:
+
+- Four runs at XYZ 128×118×64 and 129×118×64 were bit-for-bit identical to the previous worker's float32 outputs. Both crops pad to FFT XYZ 250×240×280.
+- A temporary one-key cache exercised eviction by switching input width 128 → 141 → 128, which changes padded FFT width 250 → 270 → 250.
+- On first use of width 270, about 4.3 s elapsed before the native `Richardson Lucy Started` message, followed by about 2.0 s to its finish message. These log boundaries demonstrate substantial setup outside the iteration loop; they do not separately measure compilation versus other internal setup.
+- The supplied 35 s stall was not reproduced. First-use FFT/OpenCL setup is the leading explanation, not a proven attribution of that exact run. Identical dimensions with different crop position should not need different FFT kernels. A crop resize can cross a padded-size boundary even if the visual change is small.
+
+Retaining resources prevents avoidable teardown between channels, but is not a claim that a never-before-used FFT size becomes free. The plugin still creates/bakes plans internally. Background warm-up would shift first-use work earlier, not remove it; changing crop/padding/PSF sizes to avoid new kernels could change results and was not done.
+
+Reference: the [clFFT documentation](https://clmathlibraries.github.io/clFFT/) explains plan baking, OpenCL kernel compilation, and teardown.

@@ -109,7 +109,6 @@ class PreviewCache:
         return bounds
 
     def prepare(self, settings, stale=lambda: False):
-        started = perf_counter()
         bounds = self.bounds(settings)
         crop_key = tuple(tuple(bounds[a]) for a in "zyx")
         selected = settings["CHANNEL_INDICES"]
@@ -144,7 +143,6 @@ class PreviewCache:
                 tifffile.imwrite(path, np.ascontiguousarray(psf), photometric="minisblack",
                                  metadata={"axes": "ZYX"}, bigtiff=True)
                 self.psfs[index] = (fingerprint, path)
-        print(f"Preview input preparation: {perf_counter() - started:.3f}s", flush=True)
 
 
 def deconvolve_volume(cache, settings, directory, emit, stale):
