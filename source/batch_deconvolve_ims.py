@@ -8,7 +8,7 @@ import sys
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, gettempdir
 from time import perf_counter
 
 import bioio_bioformats
@@ -30,7 +30,7 @@ ROOT = SOURCE_DIR.parent
 INPUT_DIR = ROOT / "examples"
 PSF_DIR = ROOT / "psfs"
 OUTPUT_DIR = ROOT / "dcv"
-TEMP_DIR = ROOT / ".deconvolution_temp"
+TEMP_DIR = Path(gettempdir())
 
 ITERATIONS = 40
 CHANNEL_ITERATIONS = {}

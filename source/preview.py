@@ -42,7 +42,6 @@ class Preview(ttk.Frame):
         self.on_select = on_select
         self.on_error = on_error
         self.get_settings = None
-        self.get_temp_directory = lambda: None
         self.on_activity = lambda: None
         self.on_log = lambda value: None
         self.folder = None
@@ -294,9 +293,7 @@ class Preview(ttk.Frame):
         self.pending = None
         self.request_started = perf_counter()
         try:
-            directory = Path(settings["TEMP_DIR"]).expanduser()
-            directory.mkdir(parents=True, exist_ok=True)
-            self.job_directory = TemporaryDirectory(prefix="preview-", dir=directory)
+            self.job_directory = TemporaryDirectory(prefix="preview-")
             session = self.configure_fiji(settings["FIJI_EXECUTABLE"], settings["FIJI_MEMORY"])
             settings["FIJI_SESSION"] = str(session.directory)
             self.connection.send((revision, settings, self.job_directory.name))
@@ -340,11 +337,7 @@ class Preview(ttk.Frame):
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         try:
-            directory = self.get_temp_directory()
-            if directory:
-                directory = Path(directory).expanduser()
-                directory.mkdir(parents=True, exist_ok=True)
-            self.cache_directory = TemporaryDirectory(prefix="preview-cache-", dir=directory)
+            self.cache_directory = TemporaryDirectory(prefix="preview-cache-")
             atomic_json(Path(self.cache_directory.name, "revision"), str(self.revision))
             self.process = context.Process(target=run, args=(child, str(path), self.cache_directory.name), daemon=True)
             self.process.start()

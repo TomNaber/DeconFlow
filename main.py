@@ -139,7 +139,6 @@ def main():
         ("INPUT_DIR", "Input folder (Imaris .ims files)", WORKSPACE / "examples", str, "directory"),
         ("PSF_DIR", "Point-spread function folder", WORKSPACE / "psfs", str, "directory"),
         ("OUTPUT_DIR", "Output folder", WORKSPACE / "dcv", str, "directory"),
-        ("TEMP_DIR", "Temporary working folder", WORKSPACE / ".deconvolution_temp", str, "directory"),
         ("FIJI_EXECUTABLE", "Fiji executable", default_fiji_executable(), str, "file"),
         ("FIJI_MEMORY", "Fiji memory limit (e.g. 12g = 12 GB)", "12g", str, None),
         ("RLTV_REGULARIZATION", "Total-variation regularization", 0.0001, float, None),
@@ -186,7 +185,7 @@ def main():
             refresh_channels()
         settings = {}
         for name in ("RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT",
-                     "FIJI_EXECUTABLE", "FIJI_MEMORY", "PSF_DIR", "TEMP_DIR"):
+                     "FIJI_EXECUTABLE", "FIJI_MEMORY", "PSF_DIR"):
             variable, kind, label = fields["Deconvolution"][name]
             try:
                 value = kind(variable.get())
@@ -217,7 +216,6 @@ def main():
         return settings
 
     preview.get_settings = preview_settings
-    preview.get_temp_directory = lambda: fields["Deconvolution"]["TEMP_DIR"][0].get().strip() or None
     preview.on_log = events.put
 
     def refresh_channels():
