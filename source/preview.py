@@ -749,6 +749,24 @@ class Preview(ttk.Frame):
         except (OSError, ValueError, tk.TclError) as error:
             self.on_error(str(error))
 
+    def cancel_deconvolution(self):
+        """Stop computation without discarding the loaded image, crop, or displayed result."""
+        self.revision += 1
+        if self.cache_directory is not None:
+            atomic_json(Path(self.cache_directory.name, "revision"), str(self.revision))
+        self.pending = None
+        for name in ("prepare_job", "sync_job"):
+            job = getattr(self, name)
+            if job is not None:
+                self.after_cancel(job)
+                setattr(self, name, None)
+        if self.busy == "deconvolve":
+            # Interrupt native GPU work; the persistent preview worker retains its volumes
+            # and acknowledges the obsolete request before accepting another one.
+            self.stop_fiji()
+            self.finish_initialization(False)
+        self.update_controls()
+
     def clear(self):
         if self.projection_job is not None:
             self.after_cancel(self.projection_job)

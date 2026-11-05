@@ -53,6 +53,7 @@ def main():
     separate = tk.BooleanVar(value=False)
     fields = {}
     process = None
+    running_settings = None
     cancelled = False
     events = queue.Queue()
 
@@ -538,7 +539,7 @@ def main():
     save_settings()
 
     def start():
-        nonlocal process, cancelled
+        nonlocal process, cancelled, running_settings
         group = mode.get()
         settings = {"module": "batch_deconvolve_ims" if group == "Deconvolution" else "generate_gibson_lanni_psfs"}
         try:
@@ -599,14 +600,16 @@ def main():
                     settings["CHANNELS"].append(dict(name=parts[0], excitation_nm=excitation, emission_nm=emission))
                 if not settings["CHANNELS"]:
                     raise ValueError("Enter at least one channel.")
-            preview.clear()
-            preview.stop_fiji()
+            if group == "Deconvolution":
+                preview.cancel_deconvolution()
+                preview.stop_fiji()
             process = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--worker"],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        text=True, encoding="utf-8", errors="replace", cwd=ROOT,
                                        **process_session_options())
             process.stdin.write(json.dumps(settings))
             process.stdin.close()
+            running_settings = settings
         except (ValueError, OSError) as error:
             messagebox.showerror("Cannot start", str(error), parent=window)
             return
@@ -620,8 +623,8 @@ def main():
     def cancel():
         nonlocal cancelled
         if process is None or process.poll() is not None:
-            if preview.busy is not None:
-                preview.clear()
+            if preview.busy == "deconvolve" or preview.pending is not None or preview.sync_job is not None:
+                preview.cancel_deconvolution()
                 events.put("\nPreview cancelled.\n")
             return
         cancelled = True
@@ -648,20 +651,31 @@ def main():
         events.put(child.wait())
 
     def poll():
-        nonlocal process
+        nonlocal process, running_settings
         for _ in range(500):
             try:
                 item = events.get_nowait()
             except queue.Empty:
                 break
             if isinstance(item, int):
+                succeeded = item == 0 and not cancelled
+                refresh_preview = succeeded
+                if succeeded and running_settings["module"] == "generate_gibson_lanni_psfs":
+                    # Refresh only when the generated files belong to the current PSF target.
+                    output_folder = Path(running_settings["OUTPUT_DIR"]).expanduser().resolve()
+                    target_folder = Path(fields["Deconvolution"]["PSF_DIR"][0].get()).expanduser().resolve()
+                    refresh_preview = output_folder == target_folder
                 item = "\nCancelled.\n" if cancelled else "\nFinished successfully.\n" if item == 0 else f"\nFailed (exit code {item}). See output above.\n"
                 process = None
+                running_settings = None
                 run_button.configure(state="normal")
                 cancel_button.configure(state="disabled")
                 preview.set_disabled(False)
                 schedule_fiji_initialization()
-                refresh_channels()
+                if refresh_preview:
+                    if refresh_job is not None:
+                        window.after_cancel(refresh_job)
+                    refresh_channels()
             console.configure(state="normal")
             for index, part in enumerate(item.split("\r")):
                 if index:
@@ -687,7 +701,7 @@ def main():
     cancel_button.pack(side="left", padx=5)
     def update_activity():
         cancel_button.configure(
-            state="normal" if (process is not None and not cancelled) or preview.busy is not None else "disabled")
+            state="normal" if (process is not None and not cancelled) or preview.busy == "deconvolve" else "disabled")
         for update_row in channel_row_updates:
             update_row()
 
