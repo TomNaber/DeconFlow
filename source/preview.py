@@ -101,16 +101,21 @@ class Preview(ttk.LabelFrame):
         ttk.Label(zoom_bar, textvariable=self.zoom_label, width=6, anchor="e").pack(side="right")
         self.views = ttk.Frame(self)
         self.views.pack(fill="both", expand=True)
-        self.views.columnconfigure(0, weight=3)
-        self.views.columnconfigure(1, weight=1)
+        self.views.columnconfigure(0, weight=1, uniform="preview_columns")
+        self.views.columnconfigure(1, weight=1, uniform="preview_columns")
         self.canvases = {}
+        self.view_cells = {}
         for row, title in enumerate(("Original", "Deconvolved")):
             base = row * 2
             ttk.Label(self.views, text=title).grid(row=base, column=0, columnspan=2, sticky="w", pady=(4, 0))
             self.views.rowconfigure(base + 1, weight=1, uniform="preview")
             for column, axis in enumerate(("xy", "yz")):
-                canvas = tk.Canvas(self.views, width=1, height=1, highlightthickness=0, background="#242424")
-                canvas.grid(row=base + 1, column=column, sticky="nsew", padx=2, pady=2)
+                cell = ttk.Frame(self.views)
+                cell.grid(row=base + 1, column=column, sticky="nsew", padx=2, pady=2)
+                self.view_cells[row, axis] = cell
+                cell.bind("<Configure>", self.layout_views)
+                canvas = tk.Canvas(cell, width=1, height=1, highlightthickness=0, background="#242424")
+                canvas.place(relx=0.5, rely=0.5, anchor="center", width=1, height=1)
                 canvas.bind("<Configure>", lambda event: self.draw())
                 key = row, axis
                 canvas.bind("<MouseWheel>", lambda event, key=key: self.wheel_zoom(event, key))
@@ -124,6 +129,13 @@ class Preview(ttk.LabelFrame):
         self.remove_pinch = install_pinch(self, self.pinch)
         self.update_initialization()
         self.poll_job = self.after(50, self.poll)
+
+    def layout_views(self, event=None):
+        # Use one side length for every view, independent of loaded image dimensions.
+        side = max(1, min(min(cell.winfo_width(), cell.winfo_height())
+                          for cell in self.view_cells.values()))
+        for canvas in self.canvases.values():
+            canvas.place_configure(width=side, height=side)
 
     @property
     def selected_path(self):
@@ -367,10 +379,6 @@ class Preview(ttk.LabelFrame):
                     self.crop = {axis: [0, size] for axis, size in zip("zyx", value["shape"])}
                     self.reset_view()
                     self.build_channels()
-                    z, y, x = self.data["shape"]
-                    dz, dy, dx = self.data["spacing"]
-                    self.views.columnconfigure(0, weight=max(1, round(1000 * x * dx / (x * dx + z * dz))))
-                    self.views.columnconfigure(1, weight=max(1, round(1000 * z * dz / (x * dx + z * dz))))
                     self.recolor()
                     self.parameters_changed()
                 elif kind in ("channel", "deconvolved", "failed"):
@@ -622,15 +630,15 @@ class Preview(ttk.LabelFrame):
         if (row, "xy") not in rendered:
             return None
         canvases = [self.canvases[row, axis] for axis in ("xy", "yz")]
-        left = min(canvas.winfo_x() for canvas in canvases)
-        top = min(canvas.winfo_y() for canvas in canvases)
-        right = max(canvas.winfo_x() + canvas.winfo_width() for canvas in canvases)
-        bottom = max(canvas.winfo_y() + canvas.winfo_height() for canvas in canvases)
+        left = min(canvas.winfo_rootx() for canvas in canvases)
+        top = min(canvas.winfo_rooty() for canvas in canvases)
+        right = max(canvas.winfo_rootx() + canvas.winfo_width() for canvas in canvases)
+        bottom = max(canvas.winfo_rooty() + canvas.winfo_height() for canvas in canvases)
         background = ttk.Style(self).lookup("TFrame", "background") or "#242424"
         background = tuple(value // 257 for value in self.winfo_rgb(background))
         image = Image.new("RGB", (right - left, bottom - top), background)
         for axis, canvas in zip(("xy", "yz"), canvases):
-            image.paste(rendered[row, axis], (canvas.winfo_x() - left, canvas.winfo_y() - top))
+            image.paste(rendered[row, axis], (canvas.winfo_rootx() - left, canvas.winfo_rooty() - top))
         data = self.deconvolved if row else self.data
         channels = [channel for channel in data["channels"] if channel["index"] in self.selected_channels]
         stem = Path(data["path"]).stem
