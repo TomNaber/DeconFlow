@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageEnhance, ImageTk
 from PIL.PngImagePlugin import PngInfo
 
 from source.edit_ims_channels import NAMED_COLORS
@@ -73,6 +73,8 @@ class Preview(ttk.LabelFrame):
         self.crop = None
         self.crop_drag = None
         self.draw_job = None
+        self.projection_job = None
+        self.projection_pending = False
         self.disabled = False
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(0, 8))
@@ -381,6 +383,18 @@ class Preview(ttk.LabelFrame):
                     self.build_channels()
                     self.recolor()
                     self.parameters_changed()
+                elif kind == "original_projection":
+                    bounds, axes, projections = value
+                    self.projection_pending = False
+                    if self.data is not None:
+                        projections = {channel["index"]: channel for channel in projections}
+                        for channel in self.data["channels"]:
+                            channel.update(projections[channel["index"]])
+                        for axis in axes:
+                            depth = "z" if axis == "xy" else "x"
+                            self.data[f"{axis}_bounds"] = bounds[depth]
+                        self.recolor()
+                        self.schedule_projection()
                 elif kind in ("channel", "deconvolved", "failed"):
                     revision, result = value
                     if kind != "channel":
@@ -561,12 +575,15 @@ class Preview(ttk.LabelFrame):
                         pass
                 self.recolor()
             self.schedule_draw()
+            self.schedule_projection()
 
     def end_drag(self, event=None):
         if self.crop_drag is not None:
             key = self.crop_drag["key"]
             self.crop_drag = None
             self.canvases[key].configure(cursor="")
+            self.schedule_projection()
+            self.schedule_draw()
             self.sync_changed()
         self.end_pan()
 
@@ -588,6 +605,28 @@ class Preview(ttk.LabelFrame):
         if self.draw_job is None:
             self.draw_job = self.after_idle(self.draw)
 
+    def projection_matches(self, axis):
+        depth = "z" if axis == "xy" else "x"
+        size = self.data["shape"][0 if axis == "xy" else 2]
+        return self.data.get(f"{axis}_bounds", [0, size]) == self.crop[depth]
+
+    def schedule_projection(self):
+        # At most one calculation in flight; subsequent requests use the latest crop.
+        if self.projection_job is None and not self.projection_pending:
+            self.projection_job = self.after(100, self.refresh_projection)
+
+    def refresh_projection(self):
+        self.projection_job = None
+        if self.data is None or self.connection is None:
+            return
+        axes = [axis for axis in ("xy", "yz") if not self.projection_matches(axis)]
+        if axes:
+            try:
+                self.connection.send(("project_original", {a: list(b) for a, b in self.crop.items()}, axes))
+                self.projection_pending = True
+            except (OSError, EOFError):
+                pass
+
     def render_views(self):
         scale = self.view_scale()
         if scale <= 0:
@@ -602,6 +641,16 @@ class Preview(ttk.LabelFrame):
             crop = self.deconvolved.get("crop") if row and self.deconvolved else None
             x_offset = crop[horizontal][0] if crop else 0
             y_offset = crop["y"][0] if crop else 0
+            if row == 0 and self.crop is not None:
+                # While dragging, retain the latest completed frame until its replacement arrives.
+                if self.crop_drag is None and not self.projection_matches(axis):
+                    rendered[row, axis] = Image.new("RGB", (width, height), canvas.cget("background"))
+                    continue
+                box = (self.crop[horizontal][0], self.crop["y"][0],
+                       self.crop[horizontal][1], self.crop["y"][1])
+                selected = image.crop(box)
+                image = ImageEnhance.Brightness(image).enhance(0.2)
+                image.paste(selected, box)
             transform = (1 / (scale * spacing), 0, (self.center[horizontal] - width / (2 * scale)) / spacing - x_offset,
                          0, 1 / (scale * dy), (self.center["y"] - height / (2 * scale)) / dy - y_offset)
             rendered[row, axis] = image.transform((width, height), Image.Transform.AFFINE, transform,
@@ -681,6 +730,10 @@ class Preview(ttk.LabelFrame):
             self.on_error(str(error))
 
     def clear(self):
+        if self.projection_job is not None:
+            self.after_cancel(self.projection_job)
+            self.projection_job = None
+        self.projection_pending = False
         if self.busy == "deconvolve":
             self.stop_fiji()
         if self.prepare_job is not None:

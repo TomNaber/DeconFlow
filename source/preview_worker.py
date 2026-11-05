@@ -119,6 +119,19 @@ class PreviewCache:
                 raise ValueError(f"Invalid {axis.upper()} crop bounds.")
         return bounds
 
+    def project_original(self, bounds, axes):
+        """Limit each projection's viewing axis, retaining the plane for crop editing."""
+        bounds = self.bounds({"CROP_BOUNDS": bounds})
+        projections = []
+        for index, (volume, _) in self.volumes.items():
+            channel = {"index": index}
+            if "xy" in axes:
+                channel["xy"] = volume[slice(*bounds["z"]), :, :].max(axis=0)
+            if "yz" in axes:
+                channel["yz"] = volume[:, :, slice(*bounds["x"])].max(axis=2).T
+            projections.append(channel)
+        return projections
+
     def prepare(self, settings, stale=lambda: False):
         bounds = self.bounds(settings)
         crop_key = tuple(tuple(bounds[a]) for a in "zyx")
@@ -254,6 +267,10 @@ def run(connection, path, cache_directory):
                 break
             if request == "clear_result":
                 cache.results.clear()
+                continue
+            if request[0] == "project_original":
+                _, bounds, axes = request
+                connection.send(("original_projection", (bounds, axes, cache.project_original(bounds, axes))))
                 continue
             if request[0] == "prepare":
                 _, revision, settings = request
