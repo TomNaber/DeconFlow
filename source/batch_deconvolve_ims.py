@@ -33,6 +33,7 @@ OUTPUT_DIR = ROOT / "dcv"
 TEMP_DIR = ROOT / ".deconvolution_temp"
 
 ITERATIONS = 40
+CHANNEL_ITERATIONS = {}
 RLTV_REGULARIZATION = 0.0001
 RLTV_NON_CIRCULANT = True
 FIJI_EXECUTABLE = Path(default_fiji_executable())
@@ -216,8 +217,9 @@ _session = None
 
 
 def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_path=None,
-             report_geometry=True):
+             report_geometry=True, iterations=None):
     """Reuse Fiji; callers may supply immutable, already prepared TIFFs."""
+    iterations = ITERATIONS if iterations is None else iterations
     from fiji_session import FijiClient, FijiSession
     global _session
     if session_directory is None:
@@ -245,7 +247,7 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
         success = False
         try:
             FijiClient(session_directory).run(
-                input_path, psf_path, output_path, ITERATIONS,
+                input_path, psf_path, output_path, iterations,
                 RLTV_REGULARIZATION, RLTV_NON_CIRCULANT, progress=progress.update,
                 geometry=progress.geometry if report_geometry else None)
             result = np.asarray(tifffile.imread(output_path), dtype=np.float32).squeeze()
@@ -284,7 +286,8 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 stored = image.astype(np.uint16, copy=False)
                 saturated = 0
             else:
-                result = run_fiji(image, psfs[channel_index], label)
+                result = run_fiji(image, psfs[channel_index], label,
+                                  iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS))
                 stored = store_result(result)
                 saturated = int(np.count_nonzero(result > 65535))
             stored_max = int(stored.max())
@@ -318,7 +321,11 @@ def preserve_original_channel_metadata(input_path, output_path, indices):
 
 
 def process_file(input_path, channels, psfs):
-    tag = f"iter{ITERATIONS}_reg{format(RLTV_REGULARIZATION, '.10g')}"
+    counts = {int(key): value for key, value in CHANNEL_ITERATIONS.items()}
+    iteration_tag = (str(next(iter(counts.values()))) if counts and len(set(counts.values())) == 1
+                     else "_".join(f"C{key + 1}-{value}" for key, value in sorted(counts.items()))
+                     if counts else str(ITERATIONS))
+    tag = f"iter{iteration_tag}_reg{format(RLTV_REGULARIZATION, '.10g')}"
     stem = f"{input_path.stem}_deconvolved_{tag}"
     output_path = OUTPUT_DIR / f"{stem}.ims"
     partial_path = OUTPUT_DIR / f".{stem}.partial.ims"

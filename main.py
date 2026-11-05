@@ -142,7 +142,6 @@ def main():
         ("TEMP_DIR", "Temporary working folder", WORKSPACE / ".deconvolution_temp", str, "directory"),
         ("FIJI_EXECUTABLE", "Fiji executable", default_fiji_executable(), str, "file"),
         ("FIJI_MEMORY", "Fiji memory limit (e.g. 12g = 12 GB)", "12g", str, None),
-        ("ITERATIONS", "Richardson-Lucy iterations", 40, int, None),
         ("RLTV_REGULARIZATION", "Total-variation regularization", 0.0001, float, None),
         ("RLTV_NON_CIRCULANT", "Non-circulant boundary correction", True, bool, None),
         ("OVERWRITE", "Overwrite existing output", False, bool, None),
@@ -171,12 +170,22 @@ def main():
     preview = Preview(preview_panel, channel_preferences, lambda: refresh_channels(), preview_error)
     preview.pack(fill="both", expand=True)
 
+    def channel_iterations(key):
+        raw = channel_preferences[key].get("iterations", 40)
+        try:
+            value = int(raw)
+            if value < 1:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError(f"Enter a positive whole number of iterations for C{int(key) + 1}.") from None
+        return value
+
     def preview_settings():
         if refresh_job is not None:
             window.after_cancel(refresh_job)
             refresh_channels()
         settings = {}
-        for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT",
+        for name in ("RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT",
                      "FIJI_EXECUTABLE", "FIJI_MEMORY", "PSF_DIR", "TEMP_DIR"):
             variable, kind, label = fields["Deconvolution"][name]
             try:
@@ -185,8 +194,7 @@ def main():
                     value = value.strip()
                     if not value:
                         raise ValueError()
-                if kind in (int, float) and (not math.isfinite(value) or value < 0
-                        or (name == "ITERATIONS" and value == 0)):
+                if kind in (int, float) and (not math.isfinite(value) or value < 0):
                     raise ValueError()
             except (ValueError, tk.TclError):
                 raise ValueError(f"Enter a valid value for {label}.") from None
@@ -194,12 +202,14 @@ def main():
         settings["PSF_FILES"] = []
         settings["CHANNEL_INDICES"] = []
         settings["OUTPUT_CHANNEL_NAMES"] = {}
+        settings["CHANNEL_ITERATIONS"] = {}
         for channel in active_channels:
             if channel["index"] not in preview.selected_channels:
                 continue
             filename = psf_selections.get(str(channel["index"]))
             if not filename:
                 raise ValueError(f"Select an available PSF for C{channel['index'] + 1}.")
+            settings["CHANNEL_ITERATIONS"][str(channel["index"])] = channel_iterations(str(channel["index"]))
             settings["PSF_FILES"].append(filename)
             settings["CHANNEL_INDICES"].append(channel["index"])
             settings["OUTPUT_CHANNEL_NAMES"][str(channel["index"])] = channel_preferences.get(
@@ -229,7 +239,7 @@ def main():
             if not active_channels:
                 raise ValueError("No channels found in the selected input file.")
         except (OSError, KeyError, ValueError) as error:
-            ttk.Label(channel_panel, text=str(error), wraplength=520).grid(row=0, column=0, columnspan=4, sticky="w")
+            ttk.Label(channel_panel, text=str(error), wraplength=520).grid(row=0, column=0, columnspan=5, sticky="w")
             preview.parameters_changed()
             return
         signature = [channel["name"] for channel in active_channels]
@@ -249,13 +259,13 @@ def main():
             for entry in catalog
         }
         heading_widths = {}
-        for column, label in enumerate(("Input channel", "Output channel name", "PSF channel", "Pseudocolor")):
+        for column, label in enumerate(("Input channel", "New name", "Pseudocolor", "PSF channel", "Iterations")):
             heading = ttk.Label(channel_panel, text=label)
             heading.grid(row=0, column=column, sticky="w", padx=5)
             heading_widths[column] = heading.winfo_reqwidth()
 
         def channel_dropdown(row, column, variable, values):
-            holder = ttk.Frame(channel_panel, width=heading_widths[column] + 28)
+            holder = ttk.Frame(channel_panel, width=heading_widths[column] + 12)
             holder.grid(row=row, column=column, sticky="ew", padx=5, pady=3)
             dropdown = ttk.Combobox(holder, textvariable=variable, values=values,
                                     state="readonly", width=1)
@@ -283,16 +293,28 @@ def main():
                 del psf_overrides[key]
             psf = tk.StringVar(value=labels.get(selected_file, f"Unavailable: {selected_file}" if selected_file else "No matching PSF"))
             psf_selections[key] = selected_file if selected_file in labels else None
-            psf_dropdown = channel_dropdown(row, 2, psf, tuple(labels.values()))
-            color_dropdown = channel_dropdown(row, 3, color, ("Original", *NAMED_COLORS))
+            psf_dropdown = channel_dropdown(row, 3, psf, tuple(labels.values()))
+            color_dropdown = channel_dropdown(row, 2, color, ("Original", *NAMED_COLORS))
 
-            def update_row(*args, key=key, enabled=enabled, name_entry=name_entry,
+            iterations = tk.StringVar(value=preference.get("iterations", 40))
+            iteration_entry = ttk.Spinbox(channel_panel, textvariable=iterations, from_=1, to=100000, width=5)
+            iteration_entry.grid(row=row, column=4, sticky="ew", padx=5, pady=3)
+
+            def iterations_changed(*args, key=key, iterations=iterations):
+                channel_preferences[key]["iterations"] = iterations.get()
+                save_settings()
+                preview.parameters_changed()
+
+            iterations.trace_add("write", iterations_changed)
+
+            def update_row(*args, key=key, iteration_entry=iteration_entry, enabled=enabled, name_entry=name_entry,
                            psf_dropdown=psf_dropdown, color_dropdown=color_dropdown,
                            selection=selection):
                 selected = enabled.get()
                 editable = selected and not preview.disabled
                 selection.configure(state="disabled" if preview.disabled else "normal")
                 name_entry.configure(state="normal" if editable else "disabled")
+                iteration_entry.configure(state="normal" if editable else "disabled")
                 for dropdown in (psf_dropdown, color_dropdown):
                     dropdown.configure(state="readonly" if editable else "disabled")
                 channel_preferences[key]["enabled"] = selected
@@ -318,7 +340,7 @@ def main():
 
             psf.trace_add("write", psf_changed)
             # Keep the Tk variable alive for the lifetime of its dropdown.
-            channel_variables[key] = (name, color, psf, enabled)
+            channel_variables[key] = (name, color, psf, enabled, iterations)
 
             def changed(*args, key=key, name=name, color=color):
                 channel_preferences[key].update(name=name.get(), color=color.get())
@@ -329,7 +351,7 @@ def main():
             color.trace_add("write", changed)
         if psf_error:
             ttk.Label(channel_panel, text=psf_error, wraplength=520).grid(
-                row=len(active_channels) + 1, column=0, columnspan=4, sticky="w")
+                row=len(active_channels) + 1, column=0, columnspan=5, sticky="w")
         save_settings()
         preview.parameters_changed()
 
@@ -511,7 +533,7 @@ def main():
     channels.bind("<<Modified>>", channels_changed)
     fields["Deconvolution"]["INPUT_DIR"][0].trace_add("write", schedule_channel_refresh)
     fields["Deconvolution"]["PSF_DIR"][0].trace_add("write", schedule_channel_refresh)
-    for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_EXECUTABLE", "FIJI_MEMORY"):
+    for name in ("RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_EXECUTABLE", "FIJI_MEMORY"):
         fields["Deconvolution"][name][0].trace_add("write", preview.parameters_changed)
     fiji_init_job = None
 
@@ -566,12 +588,14 @@ def main():
                 if not active_channels:
                     raise ValueError("Select an input folder with readable IMS channel metadata.")
                 settings["CHANNEL_EDITS"] = {}
+                settings["CHANNEL_ITERATIONS"] = {}
                 settings["PSF_FILES"] = []
                 settings["CHANNEL_INDICES"] = []
                 for channel in active_channels:
                     key = str(channel["index"])
                     if not channel_preferences[key].get("enabled", True):
                         continue
+                    settings["CHANNEL_ITERATIONS"][key] = channel_iterations(key)
                     settings["CHANNEL_INDICES"].append(channel["index"])
                     if not psf_selections.get(key):
                         raise ValueError(f"Select an available PSF for C{int(key) + 1}.")

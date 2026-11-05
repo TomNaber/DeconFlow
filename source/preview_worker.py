@@ -95,7 +95,8 @@ def channel_settings(settings, index):
         fingerprint = (str(path), None)
     return {
         **{key: value for key, value in settings.items()
-           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES")},
+           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES", "CHANNEL_ITERATIONS")},
+        "ITERATIONS": settings.get("CHANNEL_ITERATIONS", {}).get(str(index), settings.get("ITERATIONS", 40)),
         "PSF_FILE": filename,
         "PSF_FINGERPRINT": fingerprint,
     }
@@ -174,7 +175,7 @@ def deconvolve_volume(cache, settings, directory, emit, stale, initialized):
     import batch_deconvolve_ims as batch
 
     for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_EXECUTABLE", "FIJI_MEMORY"):
-        value = settings[name]
+        value = settings.get(name, 40) if name == "ITERATIONS" else settings[name]
         if isinstance(getattr(batch, name), Path):
             value = Path(value).expanduser()
         setattr(batch, name, value)
@@ -222,7 +223,7 @@ def deconvolve_volume(cache, settings, directory, emit, stale, initialized):
             result = batch.run_fiji(None, None, label,
                                    session_directory=settings["FIJI_SESSION"],
                                    input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1],
-                                   report_geometry=False)
+                                   report_geometry=False, iterations=processing["ITERATIONS"])
             shape = tuple(bounds[a][1] - bounds[a][0] for a in "zyx")
             if result.size != np.prod(shape):
                 raise ValueError("Deconvolution returned an unexpected image size.")

@@ -128,20 +128,14 @@ class Preview(ttk.Frame):
         ttk.Label(zoom_bar, textvariable=self.zoom_label, anchor="center").pack(fill="x", pady=(4, 0))
         self.views = ttk.Frame(image_area)
         self.views.pack(side="left", fill="both", expand=True)
-        self.views.columnconfigure(0, weight=1, uniform="preview_columns")
-        self.views.columnconfigure(1, weight=1, uniform="preview_columns")
         self.canvases = {}
         self.view_cells = {}
-        ttk.Separator(self.views, orient="horizontal").grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=3)
+        self.views.bind("<Configure>", self.layout_views)
         for row in range(2):
-            base = row * 2
-            self.views.rowconfigure(base, weight=1, uniform="preview")
-            for column, axis in enumerate(("xy", "yz")):
+            for axis in ("xy", "yz"):
                 cell = ttk.Frame(self.views)
-                cell.grid(row=base, column=column, sticky="nsew", padx=2, pady=2)
+                cell.place(x=0, y=0, width=1, height=1)
                 self.view_cells[row, axis] = cell
-                cell.bind("<Configure>", self.layout_views)
                 canvas = tk.Canvas(cell, width=1, height=1, highlightthickness=0, background="#242424")
                 canvas.place(relx=0.5, rely=0.5, anchor="center", width=1, height=1)
                 canvas.bind("<Configure>", lambda event: self.draw())
@@ -159,9 +153,14 @@ class Preview(ttk.Frame):
         self.poll_job = self.after(50, self.poll)
 
     def layout_views(self, event=None):
-        # Use one side length for every view, independent of loaded image dimensions.
-        side = max(1, min(min(cell.winfo_width(), cell.winfo_height())
-                          for cell in self.view_cells.values()))
+        # Center one square grid so both image gutters stay exactly equal.
+        gap = 4
+        side = max(1, (min(self.views.winfo_width(), self.views.winfo_height()) - gap) // 2)
+        left = (self.views.winfo_width() - 2 * side - gap) // 2
+        top = (self.views.winfo_height() - 2 * side - gap) // 2
+        for (comparison, axis), cell in self.view_cells.items():
+            cell.place_configure(x=left + comparison * (side + gap),
+                                 y=top + (axis == "yz") * (side + gap), width=side, height=side)
         for canvas in self.canvases.values():
             canvas.place_configure(width=side, height=side)
 
