@@ -58,6 +58,8 @@ class Application:
         self.window = window
         self.loading = True
         self.fields, self.defaults, self.field_widgets = {}, {}, {}
+        self.auto_spacing_vars, self.auto_spacing_widgets = {}, {}
+        self.input_spacing = {}
         self.preferences, self.definitions, self.assignments = {}, {}, {'internal':{}, 'external':{}}
         self.active_channels, self.imported_files, self.imported_catalog = [], [], []
         self.import_error = None
@@ -178,7 +180,15 @@ class Application:
             self.field(scale,'PSF generation',row,*setting)
         self.optics = self.group('PSF optical settings')
         for row,setting in enumerate(GENERATOR_FIELDS[3:]):
-            self.field(self.optics,'PSF generation',row,*setting)
+            _,holder = self.field(self.optics,'PSF generation',row,*setting)
+            name = setting[0]
+            if name in ('XY_PIXEL_SIZE_UM','Z_STEP_UM'):
+                var = tk.BooleanVar(value=False)
+                check = ttk.Checkbutton(holder,text='Auto',variable=var,state='disabled',
+                                        command=self.auto_spacing_changed)
+                check.pack(side='left',padx=(4,0))
+                self.auto_spacing_vars[name] = var
+                self.auto_spacing_widgets[name] = check
         self.pair_widgets = []
         offset = len(GENERATOR_FIELDS)-3
         for index,(design,actual,label,default) in enumerate(PAIRS):
@@ -368,6 +378,35 @@ class Application:
         self.invalidate(psf=group=='PSF generation' or name=='INPUT_DIR',
                         preview=name not in ('OUTPUT_DIR','OVERWRITE'))
 
+    def auto_spacing_changed(self):
+        self.update_auto_spacing()
+        self.save_settings()
+
+    def update_auto_spacing(self):
+        if self.batch_locked:
+            return
+        values = self.input_spacing
+        changed = False
+        # Apply both values before invalidating PSFs; field traces otherwise
+        # re-enter activity updates with only one spacing value updated.
+        self.loading = True
+        try:
+            for name,auto in self.auto_spacing_vars.items():
+                usable = name in values
+                self.auto_spacing_widgets[name].configure(state='normal' if usable else 'disabled')
+                automatic = usable and auto.get()
+                self.field_widgets[name].configure(state='readonly' if automatic else 'normal')
+                if automatic:
+                    var = self.fields['PSF generation'][name][0]
+                    value = str(values[name])
+                    if var.get() != value:
+                        var.set(value)
+                        changed = True
+        finally:
+            self.loading = False
+        if changed:
+            self.invalidate(psf=True)
+
     def invalidate(self,psf=False,preview=True):
         if self.loading:
             return
@@ -412,6 +451,7 @@ class Application:
             self.window.after_cancel(self.refresh_job)
             self.refresh_job = None
         folder = Path(self.fields['Deconvolution']['INPUT_DIR'][0].get()).expanduser()
+        self.input_spacing = {}
         self.preview.set_folder(folder)
         names = self.preview.files.cget('values')
         self.stack_status.set(f"{len(names)} Z-stack{'s' if len(names)!=1 else ''} found" if names else 'No Z-stacks detected')
@@ -429,6 +469,20 @@ class Application:
                             channel['color'] = tuple(max(0,min(1,v)) for v in color)
                         except (AttributeError,ValueError):
                             channel['color'] = (1,1,1)
+                    image = handle.get('DataSetInfo/Image')
+                    for name,axis,dimension in [('XY_PIXEL_SIZE_UM',0,'X'),('Z_STEP_UM',2,'Z')]:
+                        try:
+                            attrs = image.attrs
+                            size = int(text(attrs[dimension]))
+                            if size <= 0:
+                                raise ValueError('Invalid image dimensions.')
+                            spacing = (float(text(attrs[f'ExtMax{axis}'])) -
+                                       float(text(attrs[f'ExtMin{axis}']))) / size
+                            if not math.isfinite(spacing) or spacing <= 0:
+                                raise ValueError('Invalid image voxel spacing.')
+                            self.input_spacing[name] = spacing
+                        except (AttributeError,KeyError,TypeError,ValueError) as error:
+                            self.log(f'Cannot read input {dimension} spacing: {error}\n')
         except (OSError,KeyError,ValueError) as error:
             self.log(f'Cannot read input channels: {error}\n')
         signature = [c['name'] for c in self.active_channels]
@@ -995,6 +1049,7 @@ class Application:
     def update_activity(self):
         if self.loading:
             return
+        self.update_auto_spacing()
         self.update_channel_adjustment()
         indices = self.enabled_indices()
         ready = self.can_resolve(indices)
@@ -1099,6 +1154,8 @@ class Application:
         for group,entries in self.fields.items():
             config[group] = {name:str(var.get()) for name,(var,_,_) in entries.items()}
         config['PSF generation']['separate_design_actual'] = str(self.separate.get())
+        for name,var in self.auto_spacing_vars.items():
+            config['PSF generation'][name+'_auto'] = str(var.get())
         config['PSF generation']['channel_rows'] = json.dumps(self.definitions)
         config['PSF import'] = dict(enabled=str(self.source.get()=='external'),files=json.dumps(self.imported_files))
         config['PSF export'] = dict(enabled=str(self.export_enabled.get()),folder=self.export_folder.get())
@@ -1137,6 +1194,8 @@ class Application:
             self.export_enabled.set(config.getboolean('PSF export','enabled',fallback=False))
             self.export_folder.set(config.get('PSF export','folder',fallback=''))
             self.separate.set(config.getboolean('PSF generation','separate_design_actual',fallback=False))
+            for name,var in self.auto_spacing_vars.items():
+                var.set(config.getboolean('PSF generation',name+'_auto',fallback=False))
             if config.has_option('PSF generation','channel_rows'):
                 definitions = json.loads(config.get('PSF generation','channel_rows'))
             else:
@@ -1170,6 +1229,8 @@ class Application:
             return
         self.cancel()
         self.loading = True
+        for var in self.auto_spacing_vars.values():
+            var.set(False)
         for group,entries in self.defaults.items():
             for name,value in entries.items():
                 self.fields[group][name][0].set(value)
