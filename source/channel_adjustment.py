@@ -92,10 +92,10 @@ class ChannelAdjustment(ttk.Notebook):
                   command=lambda raw: set_value(round(float(raw)))).grid(
                       row=row, column=2, sticky='ew', padx=4)
         ttk.Label(self.table, text='255').grid(row=row, column=3)
-        entry = ttk.Entry(self.table, textvariable=entry_value, width=4)
+        entry = ttk.Spinbox(self.table, textvariable=entry_value, from_=0, to=255, increment=1, width=4)
         entry.grid(row=row, column=4, padx=(6, 3), pady=1)
 
-        def commit(event):
+        def commit(event=None):
             try:
                 contrast = int(entry_value.get())
             except ValueError:
@@ -107,6 +107,7 @@ class ChannelAdjustment(ttk.Notebook):
 
         entry.bind('<Return>', commit)
         entry.bind('<FocusOut>', commit)
+        entry.configure(command=commit)
         ttk.Button(self.table, text='Reset', width=5,
                    command=lambda: set_value(NEUTRAL_CONTRAST)).grid(row=row, column=5, padx=(4, 0))
         return visible, value, entry_value

@@ -148,6 +148,12 @@ class Application:
         w.bind('<MouseWheel>', self.scroll_settings, add='+')
         w.bind('<Button-4>', self.scroll_settings, add='+')
         w.bind('<Button-5>', self.scroll_settings, add='+')
+        # Class bindings run before the window's scroll handler. Replace the
+        # native value-changing wheel bindings, including for dynamic rows.
+        for widget_class in ('TSpinbox','TCombobox','TScale'):
+            for sequence in ('<MouseWheel>','<Button-4>','<Button-5>',
+                             '<Shift-MouseWheel>','<Shift-Button-4>','<Shift-Button-5>'):
+                w.bind_class(widget_class,sequence,self.scroll_field)
         self.setup = self.group('Setup')
         _,holder = self.field(self.setup,'Deconvolution',0,'INPUT_DIR','Z-stack input folder',WORKSPACE/'examples',str,'directory')
         ttk.Button(holder,text='Refresh',command=self.refresh_input).pack(side='left',padx=(4,0))
@@ -341,6 +347,15 @@ class Application:
                                   validate='key',validatecommand=(validate,'%P'))
         elif name == 'SCAN_DIRECTION':
             control = ttk.Combobox(holder,textvariable=var,values=('Up','Down'),state='readonly',width=8)
+        elif kind in (int,float):
+            increment = 1 if kind is int or name.endswith('_UM') and default>=1 else .01
+            if 'RI_' in name or name.endswith('_RI'):
+                increment = .001
+            elif name in ('XY_PIXEL_SIZE_UM','Z_STEP_UM'):
+                increment = .001
+            control = ttk.Spinbox(holder,textvariable=var,width=1,
+                                  from_=1 if kind is int else (0 if name=='IMAGING_DEPTH_UM' else 1e-12),
+                                  to=1e12,increment=increment,format='%.12g')
         else:
             control = ttk.Entry(holder,textvariable=var,width=1)
         control.pack(side='left',fill='x',expand=True)
@@ -353,6 +368,10 @@ class Application:
             ttk.Button(holder,text='Browse…',command=choose).pack(side='left',padx=(4,0))
         var.trace_add('write',lambda *args:self.field_changed(group,name))
         return caption,holder
+
+    def scroll_field(self,event):
+        self.scroll_settings(event)
+        return 'break'
 
     def scroll_settings(self,event):
         target = self.window.winfo_containing(event.x_root,event.y_root)
@@ -630,8 +649,11 @@ class Application:
             variables = [enabled,selected]
             for col,name in enumerate(('name','excitation_nm','emission_nm'),1):
                 var = tk.StringVar(value=self.definitions[key][name])
-                ttk.Entry(self.definition_panel,textvariable=var,width=1,
-                          state='normal' if enabled.get() else 'disabled').grid(row=row,column=col,sticky='ew',padx=3,pady=3)
+                options = dict(textvariable=var,width=1,state='normal' if enabled.get() else 'disabled')
+                control = (ttk.Entry(self.definition_panel,**options) if name=='name' else
+                           ttk.Spinbox(self.definition_panel,from_=1e-12,to=1e12,increment=1,
+                                       format='%.12g',**options))
+                control.grid(row=row,column=col,sticky='ew',padx=3,pady=3)
                 def changed(*args,key=key,name=name,var=var):
                     self.definitions[key][name] = var.get()
                     self.invalidate(psf=True)
@@ -699,7 +721,8 @@ class Application:
             ttk.Label(input_cell,text=self.input_labels()[channel['index']],wraplength=80).pack(side='left')
             widgets = [ttk.Entry(self.channel_panel,textvariable=name,width=5),
                        ttk.Combobox(self.channel_panel,textvariable=color,values=('Original',*NAMED_COLORS),state='readonly',width=8),
-                       ttk.Entry(self.channel_panel,textvariable=regularization,width=9),
+                       ttk.Spinbox(self.channel_panel,textvariable=regularization,from_=0,to=1e12,
+                                   increment=.0001,format='%.12g',width=9),
                        ttk.Spinbox(self.channel_panel,textvariable=iterations,from_=1,to=100000,width=5)]
             for col,widget in enumerate(widgets,1):
                 widget.grid(row=row,column=col,sticky='ew',padx=3,pady=3)
