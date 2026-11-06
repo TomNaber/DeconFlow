@@ -143,7 +143,10 @@ class PSFView(ttk.Frame):
         scale = self.scale(rects)
         result = Image.new('RGB', (width, height), self.canvas.cget('background'))
         for axis, (left, top, w, h) in rects.items():
+            # Match the deconvolution preview's unused image area.
+            result.paste('#242424', (left, top, left+w, top+h))
             overlay = np.zeros((h, w, 3), dtype=np.float32)
+            coverage = np.zeros((h, w), dtype=bool)
             for channel in self.selected():
                 dz, dy, dx = channel['spacing']
                 sx, sy = (dx, dy) if axis == 'xy' else (dy, dz)
@@ -154,11 +157,16 @@ class PSFView(ttk.Frame):
                              0, 1 / (scale*sy), ih/2 + self.center[vertical]/sy - h/(2*scale*sy))
                 plane = Image.fromarray(array).transform((w, h), Image.Transform.AFFINE, transform,
                                                         Image.Resampling.BILINEAR)
+                # Track image bounds independently of intensity so dark PSF
+                # pixels stay black while unused viewport space stays dark gray.
+                bounds = Image.new('L', (iw, ih), 255).transform(
+                    (w, h), Image.Transform.AFFINE, transform, Image.Resampling.NEAREST)
+                coverage |= np.asarray(bounds) > 0
                 color_name = self.preferences.get(str(channel['index']), {}).get('color', 'Original')
                 color = NAMED_COLORS.get(color_name, self.original_colors.get(channel['index'], (1,1,1)))
                 overlay += np.asarray(plane)[..., None] * np.asarray(color)
             image = Image.fromarray(np.uint8(np.clip(overlay, 0, 1) * 255))
-            result.paste(image, (left, top))
+            result.paste(image, (left, top), Image.fromarray(coverage))
         return result
 
     def draw(self):
