@@ -14,7 +14,7 @@ from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
 from source.psf_channels import load_psf_volume
 from source.preview_gestures import install_pinch
-from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid
+from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, draw_scale_bar
 from source.ui_style import workspace_background
 
 
@@ -173,6 +173,8 @@ class PSFView(ttk.Frame):
     def render(self, width, height):
         rects = self.viewports(width, height)
         scale = self.scale(rects)
+        selected = self.selected()
+        calibrated = bool(selected) and all(not channel['pixels'] for channel in selected)
         result = Image.new('RGB', (width, height), self.canvas.cget('background'))
         for axis, (left, top, w, h) in rects.items():
             # Match the deconvolution preview's unused image area.
@@ -200,6 +202,8 @@ class PSFView(ttk.Frame):
                 overlay += np.asarray(plane)[..., None] * np.asarray(color)
             image = Image.fromarray(np.uint8(np.clip(overlay, 0, 1) * 255))
             result.paste(image, (left, top), Image.fromarray(coverage))
+            if calibrated:
+                draw_scale_bar(result, scale, (left, top, w, h))
         return result
 
     def draw(self):

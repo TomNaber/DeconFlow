@@ -1,8 +1,10 @@
 """Shared preview geometry and logarithmic zoom controls."""
 import math
+from functools import lru_cache
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, font
+from PIL import ImageDraw, ImageFont
 from source.ui_style import is_dark
 
 MIN_ZOOM = 100
@@ -27,6 +29,62 @@ def pane_grid(width, height):
 
 def plane_axes(axis):
     return ('x', 'y') if axis == 'xy' else ('y', 'z')
+
+
+def scale_bar_geometry(pixels_per_um, width):
+    """Return a rounded physical length and its screen length, or None."""
+    if not math.isfinite(pixels_per_um) or pixels_per_um <= 0 or width <= 0:
+        return None
+    limit = min(120., width * .25)
+    maximum = limit / pixels_per_um
+    if not math.isfinite(maximum) or maximum <= 0:
+        return None
+    decade = 10. ** math.floor(math.log10(maximum))
+    if decade == 0:
+        return None
+    # Include the preceding decade to handle rounding at powers of ten.
+    candidates = [factor * decade for factor in (.5, 1, 2, 5, 10)]
+    value = max(value for value in candidates if value <= maximum)
+    return value, value * pixels_per_um
+
+
+@lru_cache(maxsize=1)
+def _scale_bar_font():
+    # Pillow's scalable default font lacks the micro sign. Use a system font
+    # on macOS/Windows, with a Latin-1 bitmap fallback that includes µ.
+    for name in ('Arial.ttf', 'arial.ttf', 'DejaVuSans.ttf'):
+        try:
+            return ImageFont.truetype(name, 13)
+        except OSError:
+            pass
+    return ImageFont.load_default_imagefont()
+
+
+def draw_scale_bar(image, pixels_per_um, viewport=None):
+    """Annotate a rendered pane in place, so screen and PNG use the same bar."""
+    left, top, width, height = viewport or (0, 0, *image.size)
+    geometry = scale_bar_geometry(pixels_per_um, width)
+    if geometry is None:
+        return
+    value, length = geometry
+    label = f'{value:g} µm'
+    draw = ImageDraw.Draw(image)
+    label_font = _scale_bar_font()
+    bounds = draw.textbbox((0, 0), label, font=label_font, stroke_width=1)
+    label_width, label_height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+    # Leave room for the label even when it is wider than the bar.
+    annotation_width = max(length + 4, label_width)
+    if width < annotation_width + 24 or height < label_height + 38:
+        return
+    center = left + width - 12 - annotation_width / 2
+    y = top + height - 16
+    x0, x1 = center - length / 2, center + length / 2
+    segments = [(x0, y, x1, y), (x0, y - 3, x0, y + 3), (x1, y - 3, x1, y + 3)]
+    for color, thickness in (('black', 4), ('white', 2)):
+        for segment in segments:
+            draw.line(segment, fill=color, width=thickness)
+    draw.text((center - label_width / 2 - bounds[0], y - 8 - label_height - bounds[1]),
+              label, font=label_font, fill='white', stroke_width=1, stroke_fill='black')
 
 
 class ZoomBar(ttk.Frame):

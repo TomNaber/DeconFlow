@@ -17,7 +17,7 @@ from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
 from source.preview_gestures import install_pinch
-from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, plane_axes
+from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, plane_axes, draw_scale_bar
 from source.fiji_session import FijiSession, atomic_json
 from source.platform_support import stop_process_tree
 
@@ -693,6 +693,7 @@ class Preview(ttk.Frame):
                          0, 1 / (scale * vertical_spacing), (self.center[vertical] - height / (2 * scale)) / vertical_spacing - y_offset)
             rendered[row, axis] = image.transform((width, height), Image.Transform.AFFINE, transform,
                                                   Image.Resampling.BILINEAR, fillcolor=canvas.cget("background"))
+            draw_scale_bar(rendered[row, axis], scale)
         return rendered
 
     def draw(self):
