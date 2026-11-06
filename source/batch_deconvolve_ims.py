@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import gc
+import json
 import os
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ from edit_ims_channels import parse_color
 from psf_channels import read_psf_channels, load_psf_volume
 from console_progress import ProgressLine
 from channel_metadata import read_channels
+from batch_report import BatchReport, timestamp, sha256
 
 
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -42,6 +44,8 @@ FIJI_MEMORY = "12g"
 OVERWRITE = False
 CHANNEL_EDITS = {}
 PSF_FILES = []
+PSF_SOURCE = "external"
+PSF_GENERATION_PARAMETERS = None
 # None preserves automatic all-channel processing for command-line callers.
 CHANNEL_INDICES = None
 
@@ -322,7 +326,8 @@ def preserve_original_channel_metadata(input_path, output_path, indices):
                 source.copy(metadata, output["DataSetInfo"], name=name)
 
 
-def process_file(input_path, channels, psfs):
+def process_file(input_path, channels, psfs, record=None):
+    record = {} if record is None else record
     counts = {int(key): value for key, value in CHANNEL_ITERATIONS.items()}
     iteration_tag = (str(next(iter(counts.values()))) if counts and len(set(counts.values())) == 1
                      else "_".join(f"C{key + 1}-{value}" for key, value in sorted(counts.items()))
@@ -338,7 +343,35 @@ def process_file(input_path, channels, psfs):
     partial_path = OUTPUT_DIR / f".{stem}.partial.ims"
     array_path = TEMP_DIR / f".{stem}.uint16.tczyx.dat"
 
+    record['save_location'] = str(output_path.resolve())
+    try:
+        originals = read_channels(input_path)
+        selected_indices = list(range(len(originals))) if CHANNEL_INDICES is None else CHANNEL_INDICES
+        record['channels'] = []
+        for original in originals:
+            index = original['index']
+            selected_channel = index in selected_indices
+            position = selected_indices.index(index) if selected_channel else None
+            assigned = channels[position] if position is not None and position < len(channels) else {}
+            edit = CHANNEL_EDITS.get(str(index), CHANNEL_EDITS.get(index, {})) if selected_channel else {}
+            record['channels'].append(dict(
+                index=index, input_name=original['name'],
+                requested_output_name=edit.get('name', assigned.get('name', original['name'])),
+                action='deconvolve' if selected_channel else 'preserve',
+                psf_assignment_position=position,
+                iterations=CHANNEL_ITERATIONS.get(str(index), ITERATIONS) if selected_channel else None,
+                regularization=CHANNEL_REGULARIZATION.get(str(index), RLTV_REGULARIZATION) if selected_channel else None,
+                requested_color=edit.get('color', 'original')))
+        record['channel_count'] = len(originals)
+    except Exception as error:
+        record['metadata_error'] = str(error)
+
     if output_path.exists() and not OVERWRITE:
+        record.update(status='skipped', reason='Output exists; overwrite disabled. Requested settings were not applied.')
+        try:
+            record['existing_output_channels'] = read_channels(output_path)
+        except Exception as error:
+            record['existing_output_metadata_error'] = str(error)
         print(f"Skipping existing: {output_path.name}")
         return
     partial_path.unlink(missing_ok=True)
@@ -350,6 +383,7 @@ def process_file(input_path, channels, psfs):
         if CHANNEL_INDICES == []:
             shutil.copy2(input_path, partial_path)
             partial_path.replace(output_path)
+            record.update(status="completed", action="copied unchanged")
             print(f"Copied unchanged (no channels selected): {output_path.name}")
             return
         reader = open_ims(input_path)
@@ -377,6 +411,8 @@ def process_file(input_path, channels, psfs):
             if "color" in edit:
                 output_colors[index] = parse_color(edit["color"])
         dz, dy, dx = voxel_size(reader)
+        record.update(shape_tczyx=shape, voxel_size_zyx_um=(dz, dy, dx),
+                      source_dtype=str(reader.dtype), output_channel_names=output_names)
         print(f"\nProcessing {input_path.name}")
         print(f"  Shape TCZYX: {shape}")
         print(f"  Voxel size ZYX: {(dz, dy, dx)} µm")
@@ -408,6 +444,7 @@ def process_file(input_path, channels, psfs):
         preserve_original_channel_metadata(input_path, partial_path, excluded)
         output_path.unlink(missing_ok=True)
         partial_path.replace(output_path)
+        record.update(status="completed")
         print(f"Finished: {output_path.name}")
     finally:
         reader = None
@@ -421,6 +458,41 @@ def process_file(input_path, channels, psfs):
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    names = ('INPUT_DIR', 'OUTPUT_DIR', 'TEMP_DIR', 'PSF_DIR', 'PSF_FILES',
+             'PSF_SOURCE', 'ITERATIONS', 'CHANNEL_ITERATIONS', 'CHANNEL_REGULARIZATION',
+             'RLTV_REGULARIZATION', 'RLTV_NON_CIRCULANT', 'FIJI_EXECUTABLE',
+             'FIJI_MEMORY', 'OVERWRITE', 'CHANNEL_EDITS', 'CHANNEL_INDICES')
+    settings = {name: str(globals()[name].expanduser().resolve())
+                if isinstance(globals()[name], Path) else globals()[name] for name in names}
+    if PSF_SOURCE == 'internal':
+        settings['PSF_GENERATION_PARAMETERS'] = PSF_GENERATION_PARAMETERS
+    report = BatchReport(OUTPUT_DIR, settings)
+    print(f"Batch report: {report.path}", flush=True)
+    with report.capture():
+        try:
+            run_batch(report)
+        except BaseException as error:
+            interrupted = isinstance(error, KeyboardInterrupt) or isinstance(error, SystemExit) and error.code == 130
+            report.data.update(status='interrupted' if interrupted else 'failed', error=str(error))
+            traceback.print_exc()
+            raise
+        else:
+            report.data['status'] = 'completed'
+        finally:
+            if _session is not None:
+                ready = _session.directory / 'ready.json'
+                if ready.is_file():
+                    report.data['fiji_runtime'] = json.loads(ready.read_text())
+                report.data['fiji_diagnostics'] = list(_session.diagnostics)
+            report.data['finished_utc'] = timestamp()
+            report.save()
+
+
+def run_batch(report):
+    input_files = sorted(INPUT_DIR.glob("*.ims"))
+    report.data['files'] = [dict(filename=path.name, input_path=str(path.resolve()),
+                                 status='pending') for path in input_files]
+    report.save()
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     for path in (() if CHANNEL_INDICES == [] else (
         FIJI_EXECUTABLE,
@@ -429,31 +501,50 @@ def main():
     )):
         if not path.is_file():
             raise FileNotFoundError(path)
-
+    report.data['source_sha256'] = {
+        str(path.relative_to(ROOT)): sha256(path) for path in (
+            Path(__file__), ROOT / 'app_version.py', SOURCE_DIR / 'generate_gibson_lanni_psfs.py',
+            SOURCE_DIR / 'fiji_session_worker.py', SOURCE_DIR / 'ims_writer.py',
+            SOURCE_DIR / 'lib/totalvariationterm.cl')}
+    # Fiji JAR filenames include dependency versions; hash the deconvolution plugins too.
+    fiji_root = next((parent for parent in FIJI_EXECUTABLE.resolve().parents
+                      if (parent / 'jars').is_dir()), None)
+    if fiji_root is not None:
+        jars = sorted(path for folder in ('jars', 'plugins')
+                      for path in (fiji_root / folder).rglob('*.jar'))
+        report.data['fiji_jars'] = [str(path.relative_to(fiji_root)) for path in jars]
+        report.data['fiji_deconvolution_sha256'] = {
+            str(path.relative_to(fiji_root)): sha256(path) for path in jars
+            if 'clij' in path.name.lower()}
     channels, psfs = load_psfs()
-    input_files = sorted(INPUT_DIR.glob("*.ims"))
+    report.record_psfs(channels, psfs)
     if not input_files:
         raise FileNotFoundError(f"No .ims files found in {INPUT_DIR}")
 
     print(f"Loaded {len(psfs)} channel PSFs")
     print(f"Found {len(input_files)} IMS files")
-    print(
-        f"Fiji RL-TV: iterations={ITERATIONS}, "
-        f"regularization={CHANNEL_REGULARIZATION or RLTV_REGULARIZATION}, "
-        f"non_circulant={RLTV_NON_CIRCULANT}"
-    )
     print(f"Output: {OUTPUT_DIR}")
-
     failed = []
-    for input_path in input_files:
+    for input_path, record in zip(input_files, report.data['files']):
+        record.update(status='running', started_utc=timestamp())
+        report.save()
         try:
-            process_file(input_path, channels, psfs)
-        except Exception:
+            stat = input_path.stat()
+            record.update(input_size_bytes=stat.st_size, input_mtime_ns=stat.st_mtime_ns)
+            process_file(input_path, channels, psfs, record)
+        except Exception as error:
+            record.update(status='failed', error=str(error), traceback=traceback.format_exc())
             print(f"FAILED: {input_path.name}", file=sys.stderr)
             traceback.print_exc()
             failed.append(input_path.name)
+        except BaseException:
+            record['status'] = 'interrupted'
+            raise
+        finally:
+            record['finished_utc'] = timestamp()
+            report.save()
     if failed:
-        raise SystemExit(f"Batch finished with {len(failed)} failed files: {failed}")
+        raise RuntimeError(f"Batch finished with {len(failed)} failed files: {failed}")
     print("\nBatch complete")
 
 

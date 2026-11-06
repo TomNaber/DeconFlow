@@ -141,6 +141,8 @@ class Application:
         self.controls = ttk.Frame(self.settings_canvas,padding=8)
         self.settings_item = self.settings_canvas.create_window(0,0,window=self.controls,anchor='nw')
         self.settings_layout_job = None
+        self.settings_grid_parents = []
+        self.settings_packed_rows = []
         self.controls.bind('<Configure>',self.schedule_settings_layout)
         self.settings_canvas.bind('<Configure>',self.schedule_settings_layout)
         w.bind('<MouseWheel>', self.scroll_settings, add='+')
@@ -166,7 +168,8 @@ class Application:
         ttk.Button(self.external,text='Browse…',command=self.browse_psfs).pack(side='left',padx=4)
         ttk.Button(self.external,text='Refresh',command=self.refresh_external).pack(side='left')
         self.internal = ttk.Frame(self.psf_setup)
-        ttk.Checkbutton(self.internal,text='Export generated PSF',variable=self.export_enabled,command=self.export_changed).pack(anchor='w')
+        export_check = ttk.Checkbutton(self.internal,text='Export generated PSF',variable=self.export_enabled,command=self.export_changed)
+        export_check.pack(anchor='w')
         self.export_row = ttk.Frame(self.internal)
         ttk.Label(self.export_row,text='Export folder').pack(side='left',padx=(0,8))
         ttk.Entry(self.export_row,textvariable=self.export_folder,width=1).pack(side='left',fill='x',expand=True)
@@ -176,6 +179,7 @@ class Application:
         self.actual_check.pack(anchor='w',pady=4)
         scale = ttk.Frame(self.internal)
         scale.pack(fill='x')
+        self.settings_packed_rows = [radios,self.external,export_check,self.export_row,self.actual_check]
         for row,setting in enumerate(GENERATOR_FIELDS[:3]):
             self.field(scale,'PSF generation',row,*setting)
         self.optics = self.group('PSF optical settings')
@@ -196,11 +200,13 @@ class Application:
             widgets = self.field(self.optics,'PSF generation',offset+index*2+1,actual,label+' (actual)',default,float)
             self.pair_widgets.append((caption,widgets,label))
         self.definition_panel = ttk.Frame(self.optics)
-        self.definition_panel.grid(row=offset+len(PAIRS)*2,column=0,columnspan=2,sticky='ew',pady=8)
+        self.definition_panel.grid(row=offset+len(PAIRS)*2,column=0,columnspan=2,sticky='ew',pady=(1,8))
         self.deconvolution = self.group('Deconvolution')
         self.field(self.deconvolution,'Deconvolution',1,'RLTV_NON_CIRCULANT','Non-circulant boundary correction',True,bool)
         self.channel_panel = ttk.Frame(self.deconvolution)
-        self.channel_panel.grid(row=2,column=0,columnspan=2,sticky='ew',pady=8)
+        self.channel_panel.grid(row=2,column=0,columnspan=2,sticky='ew',pady=(1,8))
+        self.settings_grid_parents = [self.setup,scale,self.optics,self.deconvolution,
+                                      self.definition_panel,self.external_channels,self.channel_panel]
         actions = ttk.Frame(left,padding=(0,2,0,8))
         actions.grid(row=2,column=0,sticky='ew',padx=side_padding)
         self.run_button = ttk.Button(actions,text='Run batch deconvolution',command=lambda:self.request('batch'))
@@ -266,6 +272,7 @@ class Application:
 
     def fit_settings(self):
         self.settings_layout_job = None
+        self.align_settings_rows()
         if self.adjustment_open:
             left = self.channel_adjustment.master
             actions_height = self.run_button.master.winfo_reqheight()
@@ -281,6 +288,41 @@ class Application:
         self.settings_canvas.configure(scrollregion=(0,0,width,height))
         if content_height <= viewport_height:
             self.settings_canvas.yview_moveto(0)
+
+    def align_settings_rows(self):
+        # Measure native controls so the common height follows the platform/theme.
+        # Containers holding several rows retain their own section spacing.
+        sections = {self.definition_panel,self.channel_panel}
+        rows = [widget for parent in self.settings_grid_parents
+                for widget in parent.grid_slaves() if widget not in sections]
+        rows.extend(widget for widget in self.settings_packed_rows if widget.winfo_manager()=='pack')
+        controls = []
+        def collect(widget):
+            if isinstance(widget,(ttk.Entry,ttk.Combobox,ttk.Spinbox,ttk.Button,ttk.Checkbutton,ttk.Radiobutton)):
+                controls.append(widget)
+            for child in widget.winfo_children():
+                collect(child)
+        for widget in rows:
+            collect(widget)
+        row_gap = 2  # One logical pixel above and below the tallest control.
+        height = max((widget.winfo_reqheight() for widget in controls),default=0) + row_gap
+        for widget in rows:
+            # Extra height is padding, leaving native widgets at their natural size.
+            # Multiline captions may exceed the baseline without being clipped.
+            space = max(row_gap,height-widget.winfo_reqheight())
+            padding = (space//2,space-space//2)
+            manager = widget.winfo_manager()
+            info = widget.grid_info() if manager=='grid' else widget.pack_info()
+            raw_padding = info['pady']
+            current = ((raw_padding,) if isinstance(raw_padding,int) else
+                       tuple(map(int,self.window.tk.splitlist(raw_padding))))
+            if len(current)==1:
+                current *= 2
+            if current != padding:
+                if manager=='grid':
+                    widget.grid_configure(pady=padding)
+                else:
+                    widget.pack_configure(pady=padding)
 
     def field(self,parent,group,row,name,label,default,kind=str,browse=None):
         var = tk.BooleanVar(value=default) if kind is bool else tk.StringVar(value=str(default))
@@ -336,9 +378,9 @@ class Application:
         self.optics.pack_forget()
         if self.source.get()=='external':
             self.external.pack(fill='x',pady=5)
-            self.external_channels.pack(fill='x',pady=5)
+            self.external_channels.pack(fill='x',pady=(1,5))
         else:
-            self.internal.pack(fill='x',pady=5)
+            self.internal.pack(fill='x')
             self.optics.pack(fill='x',pady=(0,8),before=self.deconvolution)
         self.export_row.pack_forget()
         if self.export_enabled.get():
@@ -570,14 +612,14 @@ class Application:
         self.definition_vars.clear()
         labels = self.input_labels()
         for col,label in enumerate(('Input channel','Channel name','Excitation (nm)','Emission (nm)')):
-            ttk.Label(self.definition_panel,text=label).grid(row=0,column=col,sticky='w',padx=3)
+            ttk.Label(self.definition_panel,text=label).grid(row=0,column=col,sticky='w',padx=(0 if col==0 else 3,3))
             self.definition_panel.columnconfigure(col,weight=1)
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
             target = self.definitions[key]['input_index']
             enabled = self.enabled_vars[str(target)]
             cell = ttk.Frame(self.definition_panel)
-            cell.grid(row=row,column=0,sticky='ew',padx=3)
+            cell.grid(row=row,column=0,sticky='ew',padx=(0,3))
             ttk.Checkbutton(cell,variable=enabled).pack(side='left')
             selected = tk.StringVar(value=labels[target])
             dropdown = ttk.Combobox(cell,textvariable=selected,values=tuple(labels.values()),width=10,
@@ -618,13 +660,13 @@ class Application:
         labels = {c['psf_file']:(f"C{c['index']+1}: {c['name']}" if c['index'] is not None
                                else f"{c['name']} ({c['psf_file']})") for c in self.imported_catalog}
         for col,label in enumerate(('Input channel','PSF channel')):
-            ttk.Label(self.external_channels,text=label).grid(row=0,column=col,sticky='w',padx=3)
+            ttk.Label(self.external_channels,text=label).grid(row=0,column=col,sticky='w',padx=(0 if col==0 else 3,3))
         self.external_channels.columnconfigure(1,weight=1)
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
             enabled = self.enabled_vars[key]
             ttk.Checkbutton(self.external_channels,text=self.input_labels()[channel['index']],variable=enabled).grid(
-                row=row,column=0,sticky='w',padx=3,pady=3)
+                row=row,column=0,sticky='w',padx=(0,3),pady=3)
             selected = self.assignments['external'].get(key,next(
                 (c['psf_file'] for c in self.imported_catalog if c['index']==channel['index']),None))
             var = tk.StringVar(value=labels.get(selected,''))
@@ -641,7 +683,7 @@ class Application:
             widget.destroy()
         self.channel_vars.clear()
         for col,label in enumerate(('Input channel','New name','Pseudocolor','Regularization','Iterations')):
-            ttk.Label(self.channel_panel,text=label).grid(row=0,column=col,sticky='w',padx=3)
+            ttk.Label(self.channel_panel,text=label).grid(row=0,column=col,sticky='w',padx=(0 if col==0 else 3,3))
         self.channel_panel.columnconfigure(1,weight=1)
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
@@ -652,7 +694,7 @@ class Application:
             regularization = tk.StringVar(value=pref.get('regularization',self.default_regularization))
             iterations = tk.StringVar(value=pref.get('iterations',40))
             input_cell = ttk.Frame(self.channel_panel)
-            input_cell.grid(row=row,column=0,sticky='w',padx=3)
+            input_cell.grid(row=row,column=0,sticky='w',padx=(0,3))
             ttk.Checkbutton(input_cell,variable=enabled).pack(side='left')
             ttk.Label(input_cell,text=self.input_labels()[channel['index']],wraplength=80).pack(side='left')
             widgets = [ttk.Entry(self.channel_panel,textvariable=name,width=5),
@@ -815,6 +857,8 @@ class Application:
             request = dict(kind=kind,automatic=automatic,revision=self.revision,preview_revision=self.preview.revision,
                            generator=generator,settings=settings,indices=indices,psf_revision=self.psf_revision)
             if kind=='batch':
+                settings['PSF_SOURCE'] = 'internal' if generator else 'external'
+                settings['PSF_GENERATION_PARAMETERS'] = generator
                 self.preview.cancel_deconvolution()
                 self.preview.stop_fiji()
                 self.set_batch_locked(True)
