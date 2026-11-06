@@ -15,11 +15,11 @@ from source.channel_metadata import read_channels, text
 from source.psf_channels import load_psf_volume
 
 
-def display_range(volume):
-    """Use the full integer range, or the data range for floating-point images."""
-    if np.issubdtype(volume.dtype, np.integer):
-        limits = np.iinfo(volume.dtype)
-        return float(limits.min), float(limits.max)
+def display_range(volume, input_dtype=None):
+    """Use 0–255 for 8-bit inputs and the image data range otherwise."""
+    dtype = volume.dtype if input_dtype is None else np.dtype(input_dtype)
+    if np.issubdtype(dtype, np.integer) and dtype.itemsize == 1:
+        return 0.0, 255.0
     low, high = float(volume.min()), float(volume.max())
     if low == high:
         return (0.0, high) if high > 0 else (low, low + 1.0)
@@ -211,7 +211,7 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
     for position, index in enumerate(selected, start=1):
         if stale():
             break
-        _, channel = cache.volumes[index]
+        volume, channel = cache.volumes[index]
         output_name = settings.get("OUTPUT_CHANNEL_NAMES", {}).get(str(index), channel["name"])
         label = f"Preview C{position}/{len(selected)} {output_name}"
         processing = channel_settings(settings, index)
@@ -232,8 +232,7 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             started = perf_counter()
             stored = batch.store_result(result.reshape(shape))
             projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
-                          # Stretch each result channel to its brightest voxel.
-                          "range": (0.0, max(1.0, float(stored.max()))),
+                          "range": display_range(stored, input_dtype=volume.dtype),
                           "processing": processing}
             cache.results[index] = projection
             del result, stored
