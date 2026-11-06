@@ -79,7 +79,7 @@ class PSFView(ttk.Frame):
         self.actions_shell.pack(side='bottom',fill='x',pady=(8,0))
         self.actions = ttk.Frame(self.actions_shell)
         self.actions.pack(fill='both',expand=True)
-        self.export_button = ttk.Button(self.actions,text='Export screenshot',command=self.export,state='disabled')
+        self.export_button = ttk.Button(self.actions,text='Export screenshot…',command=self.export,state='disabled')
         self.export_button.pack(side='right',anchor='s')
         area = ttk.Frame(self)
         area.pack(fill='both',expand=True)

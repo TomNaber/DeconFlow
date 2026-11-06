@@ -98,7 +98,7 @@ class Preview(ttk.Frame):
         self.cancel_button.grid(row=0, column=1, sticky="w", padx=(5, 0))
         self.sync_button = ttk.Checkbutton(actions, text="Sync preview", variable=self.sync, command=self.sync_changed)
         self.sync_button.grid(row=0, column=2, sticky="w", padx=8)
-        self.export_button = ttk.Button(actions, text="Export screenshot", command=self.export_screenshot, state="disabled")
+        self.export_button = ttk.Button(actions, text="Export screenshot…", command=self.export_screenshot, state="disabled")
         self.export_button.grid(row=0, column=3, sticky="e")
         actions.columnconfigure(2, weight=1)
         action_layout = None

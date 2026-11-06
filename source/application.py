@@ -157,14 +157,14 @@ class Application:
         self.external_channels = ttk.Frame(self.psf_setup)
         ttk.Label(self.external,text='PSF(s)').pack(side='left',padx=(0,8))
         ttk.Entry(self.external,textvariable=self.import_display,state='readonly',width=1).pack(side='left',fill='x',expand=True)
-        ttk.Button(self.external,text='Browse',command=self.browse_psfs).pack(side='left',padx=4)
+        ttk.Button(self.external,text='Browse…',command=self.browse_psfs).pack(side='left',padx=4)
         ttk.Button(self.external,text='Refresh',command=self.refresh_external).pack(side='left')
         self.internal = ttk.Frame(self.psf_setup)
         ttk.Checkbutton(self.internal,text='Export generated PSF',variable=self.export_enabled,command=self.export_changed).pack(anchor='w')
         self.export_row = ttk.Frame(self.internal)
         ttk.Label(self.export_row,text='Export folder').pack(side='left',padx=(0,8))
         ttk.Entry(self.export_row,textvariable=self.export_folder,width=1).pack(side='left',fill='x',expand=True)
-        ttk.Button(self.export_row,text='Browse',command=self.browse_export).pack(side='left',padx=4)
+        ttk.Button(self.export_row,text='Browse…',command=self.browse_export).pack(side='left',padx=4)
         self.actual_check = ttk.Checkbutton(self.internal,text='Separate objective design and actual imaging conditions',
                                            variable=self.separate,command=self.actual_changed)
         self.actual_check.pack(anchor='w',pady=4)
@@ -278,7 +278,7 @@ class Application:
                 value = filedialog.askdirectory(parent=self.window) if browse=='directory' else filedialog.askopenfilename(parent=self.window)
                 if value:
                     var.set(value)
-            ttk.Button(holder,text='Browse',command=choose).pack(side='left',padx=(4,0))
+            ttk.Button(holder,text='Browse…',command=choose).pack(side='left',padx=(4,0))
         var.trace_add('write',lambda *args:self.field_changed(group,name))
         return caption,holder
 
