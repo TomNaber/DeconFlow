@@ -76,6 +76,7 @@ class Application:
         self.refresh_job = None
         self.view_token = 0
         self.view_loading = False
+        self.psf_sync_job = None
         self.view_threads = []
         self.locked_widgets = {}
         self.source = tk.StringVar(value='internal')
@@ -212,6 +213,8 @@ class Application:
         right.add(self.preview,text='Preview deconvolution')
         self.psf_view = PSFView(right,self.preferences,lambda:self.request('view'),self.log,self.error)
         right.add(self.psf_view,text='View PSF')
+        self.psf_view.cancel_button.configure(command=self.cancel)
+        self.psf_view.sync_button.configure(command=self.schedule_psf_sync)
         for view in (self.preview, self.psf_view):
             view.adjustment_button.configure(command=self.toggle_channel_adjustment)
         self.viewer_layout_job = None
@@ -232,8 +235,9 @@ class Application:
         self.viewer_layout_job = None
         # Update the hidden preview's wrapping too, before measuring shared rows.
         self.preview.layout_actions()
+        self.psf_view.layout_actions()
         for section in ('toolbar','actions'):
-            height = (self.preview.actions_height if section=='actions' else
+            height = (max(view.actions_height for view in (self.preview,self.psf_view)) if section=='actions' else
                       max(getattr(view,section).winfo_reqheight() for view in (self.preview,self.psf_view)))
             for view in (self.preview,self.psf_view):
                 shell = getattr(view,section+'_shell')
@@ -369,7 +373,8 @@ class Application:
             return
         if preview:
             self.revision += 1
-            self.pending = None
+            if psf or not self.pending or self.pending['kind']!='view':
+                self.pending = None
             if self.process and not self.batch_locked and psf:
                 self.stop_worker()
             self.preview.cancel_deconvolution()
@@ -379,7 +384,25 @@ class Application:
             self.view_token += 1
             self.view_loading = False
             self.psf_view.invalidate()
+            self.schedule_psf_sync()
         self.save_settings()
+        self.update_activity()
+
+    def cancel_psf_sync(self):
+        if self.psf_sync_job is not None:
+            self.window.after_cancel(self.psf_sync_job)
+            self.psf_sync_job = None
+
+    def schedule_psf_sync(self):
+        self.cancel_psf_sync()
+        if self.psf_view.sync.get() and not self.batch_locked:
+            self.psf_sync_job = self.window.after(500,self.sync_psf_view)
+        self.update_activity()
+
+    def sync_psf_view(self):
+        self.psf_sync_job = None
+        if self.psf_view.sync.get() and self.psf_view.stale:
+            self.request('view',automatic=True)
         self.update_activity()
 
     def refresh_input(self):
@@ -717,6 +740,8 @@ class Application:
         return self.deconvolution_settings(self.preview.selected_channels)
 
     def request(self,kind,automatic=False):
+        if kind in ('view','batch'):
+            self.cancel_psf_sync()
         if self.batch_locked:
             return
         try:
@@ -884,6 +909,7 @@ class Application:
             self.window.after(2000,lambda:stop_process_tree(child.pid,force=True) if self.process is child and child.poll() is None else None)
 
     def cancel(self):
+        self.cancel_psf_sync()
         self.pending = None
         self.revision += 1
         self.psf_revision += 1
@@ -974,9 +1000,11 @@ class Application:
         ready = self.can_resolve(indices)
         self.run_button.configure(state='normal' if ready and not self.batch_locked else 'disabled')
         self.psf_view.view_button.configure(state='normal' if ready and not self.batch_locked and not self.view_loading else 'disabled')
-        busy = self.process is not None or self.export_task is not None or self.view_loading or self.preview.busy=='deconvolve' or self.preview.pending is not None or self.preview.sync_job is not None
+        self.psf_view.sync_button.configure(state='disabled' if self.batch_locked else 'normal')
+        busy = self.psf_sync_job is not None or self.process is not None or self.export_task is not None or self.view_loading or self.preview.busy=='deconvolve' or self.preview.pending is not None or self.preview.sync_job is not None
         self.cancel_button.configure(state='normal' if busy else 'disabled')
         self.preview.cancel_button.configure(state='normal' if busy else 'disabled')
+        self.psf_view.cancel_button.configure(state='normal' if busy else 'disabled')
 
     def poll(self):
         for _ in range(500):
@@ -1163,6 +1191,7 @@ class Application:
         if self.process or self.export_task:
             messagebox.showinfo('Job running','Cancel the current job or wait for it to finish before closing.',parent=self.window)
             return
+        self.cancel_psf_sync()
         self.preview.close()
         self.psf_view.close()
         self.view_token += 1

@@ -76,17 +76,24 @@ class PSFView(ttk.Frame):
         self.toolbar_shell.pack(fill='x',pady=(0,8))
         self.toolbar = ttk.Frame(self.toolbar_shell)
         self.toolbar.pack(fill='both',expand=True)
-        self.view_button = ttk.Button(self.toolbar,text='View PSF',command=request)
-        self.view_button.pack(side='left')
-        ttk.Label(self.toolbar,textvariable=self.status,width=1,anchor='w').pack(side='left',fill='x',expand=True,padx=8)
         self.actions_shell = ttk.Frame(self)
         self.actions_shell.pack(side='bottom',fill='x',pady=(8,0))
         self.actions = ttk.Frame(self.actions_shell)
         self.actions.pack(fill='both',expand=True)
+        self.sync = tk.BooleanVar(value=False)
+        self.view_button = ttk.Button(self.actions,text='View PSF',command=request)
+        self.view_button.grid(row=0,column=0,sticky='w')
+        self.cancel_button = ttk.Button(self.actions,text='Cancel',state='disabled')
+        self.cancel_button.grid(row=0,column=1,sticky='w',padx=(5,0))
+        self.sync_button = ttk.Checkbutton(self.actions,text='Sync PSF view',variable=self.sync)
+        self.sync_button.grid(row=0,column=2,sticky='w',padx=(8,4))
         self.adjustment_button = ttk.Button(self.actions, width=24, text='Show channel adjustment', state='disabled')
-        self.adjustment_button.pack(side='left', anchor='s', padx=(12, 4))
+        self.adjustment_button.grid(row=0,column=3,sticky='w',padx=(12,4))
         self.export_button = ttk.Button(self.actions,text='Export screenshot…',command=self.export,state='disabled')
-        self.export_button.pack(side='right',anchor='s')
+        self.export_button.grid(row=0,column=4,sticky='e')
+        self.actions.columnconfigure(3,weight=1)
+        self.actions_height = 1
+        self.actions.bind('<Configure>',self.layout_actions)
         area = ttk.Frame(self)
         area.pack(fill='both',expand=True)
         self.zoom_bar = ZoomBar(area,self.zoom,self.draw,self.reset)
@@ -105,6 +112,19 @@ class PSFView(ttk.Frame):
         self.canvas.bind('<B1-Motion>', self.pan)
         self.canvas.bind('<ButtonRelease-1>', lambda event:setattr(self, 'drag', None))
         self.remove_pinch = install_pinch(self, self.pinch)
+
+    def layout_actions(self,event=None):
+        buttons = (self.view_button,self.cancel_button,self.sync_button,
+                   self.adjustment_button,self.export_button)
+        compact = self.master.winfo_width()-24 < sum(b.winfo_reqwidth() for b in buttons)+33
+        self.adjustment_button.grid_configure(row=1 if compact else 0,
+                                             column=0 if compact else 3,
+                                             columnspan=5 if compact else 1,
+                                             padx=(0,4) if compact else (12,4),
+                                             pady=(5,0) if compact else 0)
+        height = max(b.winfo_reqheight() for b in buttons if b is not self.adjustment_button)
+        self.actions_height = (height+5+self.adjustment_button.winfo_reqheight() if compact
+                               else max(height,self.adjustment_button.winfo_reqheight()))
 
     def layout_views(self,event=None):
         # Leave unused space to the native themed frame, rather than painting it
