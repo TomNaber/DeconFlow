@@ -15,9 +15,9 @@ from source.channel_metadata import read_channels, text
 from source.psf_channels import load_psf_volume
 
 
-def display_range(volume, input_dtype=None):
+def display_range(volume):
     """Use 0–255 for 8-bit inputs and the image data range otherwise."""
-    dtype = volume.dtype if input_dtype is None else np.dtype(input_dtype)
+    dtype = volume.dtype
     if np.issubdtype(dtype, np.integer) and dtype.itemsize == 1:
         return 0.0, 255.0
     low, high = float(volume.min()), float(volume.max())
@@ -232,7 +232,7 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             started = perf_counter()
             stored = batch.store_result(result.reshape(shape))
             projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
-                          "range": display_range(stored, input_dtype=volume.dtype),
+                          "range": display_range(stored),
                           "processing": processing}
             cache.results[index] = projection
             del result, stored

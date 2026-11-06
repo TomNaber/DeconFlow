@@ -19,7 +19,7 @@ from tkinter.scrolledtext import ScrolledText
 import h5py
 
 from app_version import __version__
-from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST
+from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST, contrast_maximum
 from source.channel_metadata import read_channels, text
 from source.edit_ims_channels import NAMED_COLORS
 from source.platform_support import default_fiji_executable, process_session_options, stop_process_tree
@@ -513,10 +513,11 @@ class Application:
             self.refresh_job = None
         folder = Path(self.fields['Deconvolution']['INPUT_DIR'][0].get()).expanduser()
         self.input_spacing = {}
+        # set_folder triggers activity callbacks before channel preferences are rebuilt.
+        self.active_channels = []
         self.preview.set_folder(folder)
         names = self.preview.files.cget('values')
         self.stack_status.set(f"{len(names)} Z-stack{'s' if len(names)!=1 else ''} found" if names else 'No Z-stacks detected')
-        self.active_channels = []
         try:
             if self.preview.selected_path:
                 self.active_channels = read_channels(self.preview.selected_path)
@@ -1085,11 +1086,11 @@ class Application:
             contrast = self.preview.channel_contrast[row]
             for channel in sorted(self.preview.display_channels(row, visible_only=False), key=lambda c: c['index']):
                 index = channel['index']
-                rows.append((kind, index, channel['name'], self.preview.channel_visible(index),
+                rows.append((kind, index, channel['name'], contrast_maximum(channel), self.preview.channel_visible(index),
                              contrast.get(index, NEUTRAL_CONTRAST)))
         for channel in sorted(self.psf_view.selected(visible_only=False), key=lambda c: c['index']):
             index = channel['index']
-            rows.append(('PSF', index, channel['name'], self.psf_view.channel_visibility.get(index, True),
+            rows.append(('PSF', index, channel['name'], contrast_maximum(channel), self.psf_view.channel_visibility.get(index, True),
                          self.psf_view.channel_contrast.get(index, NEUTRAL_CONTRAST)))
         self.channel_adjustment.grid()
         if self.channel_adjustment.display(tuple(rows)):
