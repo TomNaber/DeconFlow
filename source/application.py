@@ -83,7 +83,6 @@ class Application:
         self.export_folder = tk.StringVar()
         self.import_display = tk.StringVar()
         self.stack_status = tk.StringVar()
-        self.psf_status = tk.StringVar()
         if settings_path is None:
             if sys.platform == 'darwin':
                 base = Path.home()/'Library'/'Application Support'
@@ -187,7 +186,6 @@ class Application:
         self.field(self.deconvolution,'Deconvolution',1,'RLTV_NON_CIRCULANT','Non-circulant boundary correction',True,bool)
         self.channel_panel = ttk.Frame(self.deconvolution)
         self.channel_panel.grid(row=2,column=0,columnspan=2,sticky='ew',pady=8)
-        ttk.Label(self.deconvolution,textvariable=self.psf_status,wraplength=520).grid(row=3,column=0,columnspan=2,sticky='w')
         actions = ttk.Frame(left,padding=(4,8))
         actions.grid(row=1,column=0,sticky='ew')
         self.run_button = ttk.Button(actions,text='Run batch',command=lambda:self.request('batch'))
@@ -906,16 +904,6 @@ class Application:
         busy = self.process is not None or self.export_task is not None or self.view_loading or self.preview.busy=='deconvolve' or self.preview.pending is not None or self.preview.sync_job is not None
         self.cancel_button.configure(state='normal' if busy else 'disabled')
         self.preview.cancel_button.configure(state='normal' if busy else 'disabled')
-        if self.source.get()=='external':
-            status = self.import_error or ('' if ready else 'Select an available PSF for each enabled channel.')
-        else:
-            try:
-                settings = self.generator_settings()
-                status = 'Internal PSFs cached.' if self.session.get(settings) else 'Internal PSFs will be generated when needed.'
-            except ValueError as error:
-                status = str(error)
-        if self.psf_status.get()!=status:
-            self.psf_status.set(status)
 
     def poll(self):
         for _ in range(500):
