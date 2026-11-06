@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import json
 import re
 from pathlib import Path
 from time import monotonic
@@ -14,6 +13,7 @@ from console_progress import ProgressLine
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = ROOT / "psfs/1000"
+OUTPUT_IS_TEMPORARY = False
 SCAN_DIRECTION = "up"
 
 XY_PIXEL_SIZE_UM = 0.0801669
@@ -45,34 +45,12 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     started = monotonic()
 
-    manifest = {
-        "model": "confocal scalar Gibson-Lanni",
-        "axes": "ZYX",
-        "scan_direction": SCAN_DIRECTION,
-        "voxel_size_um": {
-            "z": Z_STEP_UM,
-            "y": XY_PIXEL_SIZE_UM,
-            "x": XY_PIXEL_SIZE_UM,
-        },
-        "imaging_depth_um": IMAGING_DEPTH_UM,
-        "channels": [],
-    }
-
     for index, channel in enumerate(CHANNELS):
         name = channel["name"]
-        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
-        filename = f"psf_C{index + 1}_{safe_name}.tif"
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or f"channel{index + 1}"
+        input_index = channel.get("index", index)
+        filename = f"psf_C{input_index + 1}_{safe_name}.tif"
         output_path = OUTPUT_DIR / filename
-
-        manifest["channels"].append(
-            {
-                "index": index,
-                "name": name,
-                "excitation_nm": channel["excitation_nm"],
-                "emission_nm": channel["emission_nm"],
-                "psf_file": filename,
-            }
-        )
 
         label = f"Channel {index + 1}/{len(CHANNELS)} ({name})"
         if output_path.exists() and not OVERWRITE:
@@ -116,10 +94,10 @@ def main():
                 resolution=(1.0 / XY_PIXEL_SIZE_UM, 1.0 / XY_PIXEL_SIZE_UM),
             )
 
-    manifest_path = OUTPUT_DIR / "psf_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"PSF generation completed in {monotonic() - started:.1f}s. "
-          f"Output: {OUTPUT_DIR}", flush=True)
+    message = f"PSF generation completed in {monotonic() - started:.1f}s."
+    if not OUTPUT_IS_TEMPORARY:
+        message += f" Output: {OUTPUT_DIR}"
+    print(message, flush=True)
 
 
 if __name__ == "__main__":

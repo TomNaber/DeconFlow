@@ -20,7 +20,7 @@ from bioio import BioImage
 from platform_support import default_fiji_executable
 from ims_writer import write_imaris
 from edit_ims_channels import parse_color
-from psf_channels import read_psf_channels
+from psf_channels import read_psf_channels, load_psf_volume
 from console_progress import ProgressLine
 from channel_metadata import read_channels
 
@@ -34,6 +34,7 @@ TEMP_DIR = Path(gettempdir())
 
 ITERATIONS = 40
 CHANNEL_ITERATIONS = {}
+CHANNEL_REGULARIZATION = {}
 RLTV_REGULARIZATION = 0.0001
 RLTV_NON_CIRCULANT = True
 FIJI_EXECUTABLE = Path(default_fiji_executable())
@@ -72,22 +73,21 @@ def load_psfs():
             raise ValueError("Select one PSF for each unique channel index")
         if not CHANNEL_INDICES:
             return [], []
-    channels = read_psf_channels(PSF_DIR)
-    if PSF_FILES:
+    paths = [Path(filename).expanduser() for filename in PSF_FILES]
+    channels = read_psf_channels([path if path.is_absolute() else PSF_DIR / path for path in paths]
+                                 if paths else PSF_DIR)
+    if paths:
+        # Preserve repeated assignments when one PSF is used for multiple channels.
         by_file = {channel["psf_file"]: channel for channel in channels}
-        channels = [by_file[filename] for filename in PSF_FILES]
-    elif [channel["index"] for channel in channels] != list(range(len(channels))):
-        raise ValueError("PSF channel numbering must be consecutive for automatic assignment")
-    psfs = []
-    for channel in channels:
-        path = PSF_DIR / channel["psf_file"]
-        if not path.is_file():
-            raise FileNotFoundError(path)
-        psf = np.asarray(tifffile.imread(path), dtype=np.float32).squeeze()
-        np.nan_to_num(psf, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        np.maximum(psf, 0.0, out=psf)
-        psf /= psf.sum(dtype=np.float64)
-        psfs.append(np.ascontiguousarray(psf))
+        channels = [by_file[str((path if path.is_absolute() else PSF_DIR / path).resolve())]
+                    for path in paths]
+    else:
+        if any(channel["index"] is None for channel in channels):
+            raise ValueError("Assign unnumbered or ambiguous PSFs explicitly")
+        channels.sort(key=lambda channel: channel["index"])
+        if not channels or [channel["index"] for channel in channels] != list(range(len(channels))):
+            raise ValueError("PSF channel numbering must be consecutive for automatic assignment")
+    psfs = [load_psf_volume(channel["psf_file"]) for channel in channels]
     return channels, psfs
 
 
@@ -217,9 +217,10 @@ _session = None
 
 
 def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_path=None,
-             report_geometry=True, iterations=None):
+             report_geometry=True, iterations=None, regularization=None):
     """Reuse Fiji; callers may supply immutable, already prepared TIFFs."""
     iterations = ITERATIONS if iterations is None else iterations
+    regularization = RLTV_REGULARIZATION if regularization is None else regularization
     from fiji_session import FijiClient, FijiSession
     global _session
     if session_directory is None:
@@ -248,7 +249,7 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
         try:
             FijiClient(session_directory).run(
                 input_path, psf_path, output_path, iterations,
-                RLTV_REGULARIZATION, RLTV_NON_CIRCULANT, progress=progress.update,
+                regularization, RLTV_NON_CIRCULANT, progress=progress.update,
                 geometry=progress.geometry if report_geometry else None)
             result = np.asarray(tifffile.imread(output_path), dtype=np.float32).squeeze()
             success = True
@@ -287,7 +288,8 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 saturated = 0
             else:
                 result = run_fiji(image, psfs[channel_index], label,
-                                  iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS))
+                                  iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS),
+                                  regularization=CHANNEL_REGULARIZATION.get(str(channel_index), RLTV_REGULARIZATION))
                 stored = store_result(result)
                 saturated = int(np.count_nonzero(result > 65535))
             stored_max = int(stored.max())
@@ -325,7 +327,12 @@ def process_file(input_path, channels, psfs):
     iteration_tag = (str(next(iter(counts.values()))) if counts and len(set(counts.values())) == 1
                      else "_".join(f"C{key + 1}-{value}" for key, value in sorted(counts.items()))
                      if counts else str(ITERATIONS))
-    tag = f"iter{iteration_tag}_reg{format(RLTV_REGULARIZATION, '.10g')}"
+    regularizations = {int(key): value for key,value in CHANNEL_REGULARIZATION.items()}
+    regularization_tag = (format(next(iter(regularizations.values())), '.10g')
+                          if regularizations and len(set(regularizations.values())) == 1
+                          else "_".join(f"C{key+1}-{value:.10g}" for key,value in sorted(regularizations.items()))
+                          if regularizations else format(RLTV_REGULARIZATION, '.10g'))
+    tag = f"iter{iteration_tag}_reg{regularization_tag}"
     stem = f"{input_path.stem}_deconvolved_{tag}"
     output_path = OUTPUT_DIR / f"{stem}.ims"
     partial_path = OUTPUT_DIR / f".{stem}.partial.ims"
@@ -432,7 +439,7 @@ def main():
     print(f"Found {len(input_files)} IMS files")
     print(
         f"Fiji RL-TV: iterations={ITERATIONS}, "
-        f"regularization={RLTV_REGULARIZATION:g}, "
+        f"regularization={CHANNEL_REGULARIZATION or RLTV_REGULARIZATION}, "
         f"non_circulant={RLTV_NON_CIRCULANT}"
     )
     print(f"Output: {OUTPUT_DIR}")

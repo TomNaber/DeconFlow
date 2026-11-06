@@ -16,13 +16,11 @@ from PIL.PngImagePlugin import PngInfo
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
 from source.preview_gestures import install_pinch
-from source.ui_style import is_dark
+from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, plane_axes
 from source.fiji_session import FijiSession, atomic_json
 from source.platform_support import stop_process_tree
 
 
-MIN_ZOOM = 10
-MAX_ZOOM = 5000
 
 def composite(channels, axis, preferences):
     result = np.zeros((*channels[0][axis].shape, 3), dtype=np.float32)
@@ -42,6 +40,9 @@ class Preview(ttk.Frame):
         self.on_select = on_select
         self.on_error = on_error
         self.get_settings = None
+        self.request_psfs = None
+        self.on_cancel = lambda: self.cancel_deconvolution()
+        self.psfs_ready = lambda indices: False
         self.on_activity = lambda: None
         self.on_log = lambda value: None
         self.folder = None
@@ -70,8 +71,6 @@ class Preview(ttk.Frame):
         self.photos = {}
         self.zoom = tk.DoubleVar(value=100)
         self.zoom_label = tk.StringVar(value="100%")
-        self.zoom_position = tk.DoubleVar(value=MIN_ZOOM + MAX_ZOOM - 100)
-        self.zoom.trace_add("write", self.sync_zoom_control)
         self.center = dict.fromkeys("xyz", 0.0)
         self.drag = None
         self.crop = None
@@ -80,50 +79,56 @@ class Preview(ttk.Frame):
         self.projection_job = None
         self.projection_pending = False
         self.disabled = False
-        toolbar = ttk.Frame(self)
-        toolbar.pack(fill="x", pady=(0, 8))
+        self.toolbar_shell = ttk.Frame(self)
+        self.toolbar_shell.pack(fill="x", pady=(0, 8))
+        self.toolbar = toolbar = ttk.Frame(self.toolbar_shell)
+        toolbar.pack(fill="both", expand=True)
         self.files = ttk.Combobox(toolbar, textvariable=self.filename, state="readonly", width=12)
         self.files.pack(side="left", fill="x", expand=True)
         self.files.bind("<<ComboboxSelected>>", lambda event: self.on_select())
         self.load_button = ttk.Button(toolbar, text="Load", command=self.load, state="disabled")
         self.load_button.pack(side="left", padx=(6, 0))
-        actions = ttk.Frame(self)
-        actions.pack(side="bottom", fill="x", pady=(8, 0))
+        self.actions_shell = ttk.Frame(self)
+        self.actions_shell.pack(side="bottom", fill="x", pady=(8, 0))
+        self.actions = actions = ttk.Frame(self.actions_shell)
+        actions.pack(fill="both", expand=True)
         self.deconvolve_button = ttk.Button(actions, text="Deconvolve preview", command=self.deconvolve, state="disabled")
-        self.deconvolve_button.pack(side="left")
+        self.deconvolve_button.grid(row=0, column=0, sticky="w")
+        self.cancel_button = ttk.Button(actions, text="Cancel", command=lambda: self.on_cancel(), state="disabled")
+        self.cancel_button.grid(row=0, column=1, sticky="w", padx=(5, 0))
         self.sync_button = ttk.Checkbutton(actions, text="Sync preview", variable=self.sync, command=self.sync_changed)
-        self.sync_button.pack(side="left", padx=8)
+        self.sync_button.grid(row=0, column=2, sticky="w", padx=8)
         self.export_button = ttk.Button(actions, text="Export screenshot", command=self.export_screenshot, state="disabled")
-        self.export_button.pack(side="right")
+        self.export_button.grid(row=0, column=3, sticky="e")
+        actions.columnconfigure(2, weight=1)
+        action_layout = None
+
+        def layout_actions(event=None):
+            nonlocal action_layout
+            required = sum(button.winfo_reqwidth() for button in
+                           (self.deconvolve_button, self.cancel_button, self.sync_button, self.export_button)) + 21
+            compact = self.master.winfo_width() - 24 < required
+            self.actions_height = (max(self.deconvolve_button.winfo_reqheight(), self.cancel_button.winfo_reqheight())
+                                   + 5 + max(self.sync_button.winfo_reqheight(), self.export_button.winfo_reqheight())
+                                   if compact else max(button.winfo_reqheight() for button in
+                                   (self.deconvolve_button,self.cancel_button,self.sync_button,self.export_button)))
+            if compact != action_layout:
+                action_layout = compact
+                self.sync_button.grid_configure(row=1 if compact else 0, column=0 if compact else 2,
+                                                columnspan=2 if compact else 1, pady=(5, 0) if compact else 0)
+                self.export_button.grid_configure(row=1 if compact else 0, column=2 if compact else 3,
+                                                  columnspan=2 if compact else 1, pady=(5, 0) if compact else 0)
+
+        self.layout_actions = layout_actions
+        actions.bind("<Configure>", layout_actions)
         image_area = ttk.Frame(self)
         image_area.pack(fill="both", expand=True)
-        zoom_bar = ttk.Frame(image_area)
-        zoom_bar.pack(side="right", fill="y", padx=(6, 0))
-        # Tk 8.6 uses PNG exports of the SVG source icons bundled alongside them.
-        assets = Path(__file__).with_name("assets")
-        icon_suffix = "-light" if is_dark(self) else ""
-        self.zoom_icons = {
-            name: tk.PhotoImage(master=self, file=str(assets / f"{name}{icon_suffix}.png"))
-            for name in ("zoom-in", "zoom-out")
-        }
-        zoom_in_icon = ttk.Label(zoom_bar, image=self.zoom_icons["zoom-in"], anchor="center")
-        zoom_in_icon.pack()
-        self.zoom_slider = ttk.Scale(zoom_bar, from_=MIN_ZOOM, to=MAX_ZOOM, orient="vertical",
-                                     variable=self.zoom_position, command=self.slider_zoom)
-        self.zoom_slider.pack(fill="y", expand=True, pady=4)
-        zoom_out_icon = ttk.Label(zoom_bar, image=self.zoom_icons["zoom-out"], anchor="center")
-        zoom_out_icon.pack()
-
-        def refresh_zoom_icons(event=None):
-            suffix = "-light" if is_dark(self) else ""
-            for name, label in (("zoom-in", zoom_in_icon), ("zoom-out", zoom_out_icon)):
-                self.zoom_icons[name].configure(file=str(assets / f"{name}{suffix}.png"))
-
-        self.bind("<Map>", refresh_zoom_icons)
-        self.reset_button = ttk.Button(zoom_bar, text="↺", width=1,
-                                       command=self.reset_zoom, state="disabled")
-        self.reset_button.pack(fill="x", pady=(4, 0))
-        ttk.Label(zoom_bar, textvariable=self.zoom_label, anchor="center").pack(fill="x", pady=(4, 0))
+        self.zoom_bar = ZoomBar(image_area,self.zoom,self.schedule_draw,self.reset_zoom)
+        self.zoom_bar.pack(side="right",fill="y",padx=(6,0))
+        self.zoom_slider = self.zoom_bar.slider
+        self.reset_button = self.zoom_bar.reset_button
+        self.zoom_position = self.zoom_bar.position
+        self.zoom_label = self.zoom_bar.label
         self.views = ttk.Frame(image_area)
         self.views.pack(side="left", fill="both", expand=True)
         self.canvases = {}
@@ -136,7 +141,7 @@ class Preview(ttk.Frame):
                 cell.place(x=0, y=0, width=1, height=1)
                 self.view_cells[row, axis] = cell
                 canvas = tk.Canvas(cell, width=1, height=1, highlightthickness=0, background="#242424")
-                canvas.place(relx=0.5, rely=0.5, anchor="center", width=1, height=1)
+                canvas.place(x=0, y=0, width=1, height=1)
                 canvas.bind("<Configure>", lambda event: self.draw())
                 key = row, axis
                 canvas.bind("<MouseWheel>", lambda event, key=key: self.wheel_zoom(event, key))
@@ -152,11 +157,7 @@ class Preview(ttk.Frame):
         self.poll_job = self.after(50, self.poll)
 
     def layout_views(self, event=None):
-        # Center one square grid so both image gutters stay exactly equal.
-        gap = 4
-        side = max(1, (min(self.views.winfo_width(), self.views.winfo_height()) - gap) // 2)
-        left = (self.views.winfo_width() - 2 * side - gap) // 2
-        top = (self.views.winfo_height() - 2 * side - gap) // 2
+        left, top, side, gap = pane_grid(self.views.winfo_width(),self.views.winfo_height())
         for (comparison, axis), cell in self.view_cells.items():
             cell.place_configure(x=left + (axis == "yz") * (side + gap),
                                  y=top + comparison * (side + gap), width=side, height=side)
@@ -202,6 +203,7 @@ class Preview(ttk.Frame):
         self.reset_button.configure(state="normal" if self.data is not None and not disabled else "disabled")
         ready = (self.matches_loaded() and self.selected_channels and not disabled and self.busy is None
                  and self.crop_drag is None and not self.sync.get())
+        ready = ready and self.psfs_ready(self.selected_channels)
         self.deconvolve_button.configure(state="normal" if ready else "disabled")
         self.export_button.configure(state="normal" if self.images and not disabled else "disabled")
         self.on_activity()
@@ -254,10 +256,21 @@ class Preview(ttk.Frame):
             self.after_cancel(self.sync_job)
             self.sync_job = None
         self.update_controls()
-        if self.sync.get() and self.matches_loaded() and self.selected_channels and not self.disabled and self.crop_drag is None:
+        if (self.sync.get() and self.matches_loaded() and self.selected_channels and not self.disabled
+                and self.crop_drag is None and self.psfs_ready(self.selected_channels)):
             self.sync_job = self.after(500, lambda: self.deconvolve(automatic=True))
+            self.on_activity()
 
     def deconvolve(self, automatic=False):
+        self.sync_job = None
+        if self.disabled or not self.matches_loaded() or not self.selected_channels or self.crop_drag is not None:
+            return
+        if self.request_psfs is not None:
+            self.request_psfs(automatic)
+        else:
+            self.deconvolve_resolved(automatic)
+
+    def deconvolve_resolved(self, automatic=False):
         self.sync_job = None
         if self.disabled or self.crop_drag is not None or not self.matches_loaded() or not self.selected_channels or self.get_settings is None:
             return
@@ -463,23 +476,13 @@ class Preview(ttk.Frame):
             return 0
         z, y, x = self.data["shape"]
         dz, dy, dx = self.data["spacing"]
-        widths = {"xy": x * dx, "yz": z * dz}
-        height = y * dy
+        widths = {"xy": x * dx, "yz": y * dy}
+        heights = {"xy": y * dy, "yz": z * dz}
         fit = min(
-            min((canvas.winfo_width() - 8) / widths[axis], (canvas.winfo_height() - 8) / height)
+            min((canvas.winfo_width() - 8) / widths[axis], (canvas.winfo_height() - 8) / heights[axis])
             for (row, axis), canvas in self.canvases.items()
         )
         return max(0, fit) * self.zoom.get() / 100
-
-    def sync_zoom_control(self, *args):
-        self.zoom_position.set(MIN_ZOOM + MAX_ZOOM - self.zoom.get())
-        self.zoom_label.set(f"{self.zoom.get():.0f}%")
-
-    def slider_zoom(self, value):
-        # Keep the native scale ascending (Aqua cannot reliably draw reversed
-        # ranges), while placing maximum magnification at the top.
-        self.zoom.set(MIN_ZOOM + MAX_ZOOM - float(value))
-        self.schedule_draw()
 
     def set_zoom(self, value, key=None, x=None, y=None):
         if self.data is None or self.disabled:
@@ -489,9 +492,9 @@ class Preview(ttk.Frame):
         new_scale = self.view_scale()
         if key is not None and old_scale > 0 and new_scale > 0:
             canvas = self.canvases[key]
-            horizontal = "x" if key[1] == "xy" else "z"
+            horizontal, vertical = plane_axes(key[1])
             self.center[horizontal] += (x - canvas.winfo_width() / 2) * (1 / old_scale - 1 / new_scale)
-            self.center["y"] += (y - canvas.winfo_height() / 2) * (1 / old_scale - 1 / new_scale)
+            self.center[vertical] += (y - canvas.winfo_height() / 2) * (1 / old_scale - 1 / new_scale)
         self.zoom_label.set(f"{self.zoom.get():.0f}%")
         self.schedule_draw()
 
@@ -521,12 +524,12 @@ class Preview(ttk.Frame):
     def crop_rectangle(self, key):
         scale = self.view_scale()
         canvas = self.canvases[key]
-        horizontal = "x" if key[1] == "xy" else "z"
+        horizontal, vertical = plane_axes(key[1])
         spacing = dict(zip("zyx", self.data["spacing"]))
         return [canvas.winfo_width() / 2 + (self.crop[horizontal][0] * spacing[horizontal] - self.center[horizontal]) * scale,
-                canvas.winfo_height() / 2 + (self.crop["y"][0] * spacing["y"] - self.center["y"]) * scale,
+                canvas.winfo_height() / 2 + (self.crop[vertical][0] * spacing[vertical] - self.center[vertical]) * scale,
                 canvas.winfo_width() / 2 + (self.crop[horizontal][1] * spacing[horizontal] - self.center[horizontal]) * scale,
-                canvas.winfo_height() / 2 + (self.crop["y"][1] * spacing["y"] - self.center["y"]) * scale]
+                canvas.winfo_height() / 2 + (self.crop[vertical][1] * spacing[vertical] - self.center[vertical]) * scale]
 
     def crop_edges(self, key, x, y):
         if key[0] != 0 or self.crop is None or self.disabled or self.view_scale() <= 0:
@@ -536,18 +539,18 @@ class Preview(ttk.Frame):
         if top - 7 <= y <= bottom + 7:
             side = 0 if abs(x - left) <= abs(x - right) else 1
             if abs(x - (left, right)[side]) <= 7:
-                edges.append(("x" if key[1] == "xy" else "z", side))
+                edges.append((plane_axes(key[1])[0], side))
         if left - 7 <= x <= right + 7:
             side = 0 if abs(y - top) <= abs(y - bottom) else 1
             if abs(y - (top, bottom)[side]) <= 7:
-                edges.append(("y", side))
+                edges.append((plane_axes(key[1])[1], side))
         return edges
 
     def crop_cursor(self, event, key):
         if self.drag is not None or self.crop_drag is not None:
             return
         edges = self.crop_edges(key, event.x, event.y)
-        cursor = "crosshair" if len(edges) == 2 else "sb_v_double_arrow" if edges and edges[0][0] == "y" else "sb_h_double_arrow" if edges else ""
+        cursor = "crosshair" if len(edges) == 2 else "sb_v_double_arrow" if edges and edges[0][0] == plane_axes(key[1])[1] else "sb_h_double_arrow" if edges else ""
         self.canvases[key].configure(cursor=cursor)
 
     def start_drag(self, event, key):
@@ -569,7 +572,7 @@ class Preview(ttk.Frame):
         sizes = dict(zip("zyx", self.data["shape"]))
         bounds = {axis: list(value) for axis, value in drag["bounds"].items()}
         for axis, side in drag["edges"]:
-            delta = event.y - drag["y"] if axis == "y" else event.x - drag["x"]
+            delta = event.y - drag["y"] if axis == plane_axes(drag["key"][1])[1] else event.x - drag["x"]
             value = round(drag["bounds"][axis][side] + delta / (drag["scale"] * spacing[axis]))
             bounds[axis][side] = max(0, min(bounds[axis][1] - 1, value)) if side == 0 else min(sizes[axis], max(bounds[axis][0] + 1, value))
         if bounds != self.crop:
@@ -602,9 +605,9 @@ class Preview(ttk.Frame):
         scale = self.view_scale()
         if self.drag is not None and scale > 0:
             key, x, y, center = self.drag
-            horizontal = "x" if key[1] == "xy" else "z"
+            horizontal, vertical = plane_axes(key[1])
             self.center[horizontal] = center[horizontal] - (event.x - x) / scale
-            self.center["y"] = center["y"] - (event.y - y) / scale
+            self.center[vertical] = center[vertical] - (event.y - y) / scale
             self.schedule_draw()
 
     def end_pan(self, event=None):
@@ -647,23 +650,24 @@ class Preview(ttk.Frame):
         for (row, axis), image in self.images.items():
             canvas = self.canvases[row, axis]
             width, height = canvas.winfo_width(), canvas.winfo_height()
-            horizontal = "x" if axis == "xy" else "z"
-            spacing = dx if axis == "xy" else dz
+            horizontal, vertical = plane_axes(axis)
+            spacing = dx if axis == "xy" else dy
+            vertical_spacing = dy if axis == "xy" else dz
             crop = self.deconvolved.get("crop") if row and self.deconvolved else None
             x_offset = crop[horizontal][0] if crop else 0
-            y_offset = crop["y"][0] if crop else 0
+            y_offset = crop[vertical][0] if crop else 0
             if row == 0 and self.crop is not None:
                 # While dragging, retain the latest completed frame until its replacement arrives.
                 if self.crop_drag is None and not self.projection_matches(axis):
                     rendered[row, axis] = Image.new("RGB", (width, height), canvas.cget("background"))
                     continue
-                box = (self.crop[horizontal][0], self.crop["y"][0],
-                       self.crop[horizontal][1], self.crop["y"][1])
+                box = (self.crop[horizontal][0], self.crop[vertical][0],
+                       self.crop[horizontal][1], self.crop[vertical][1])
                 selected = image.crop(box)
                 image = ImageEnhance.Brightness(image).enhance(0.2)
                 image.paste(selected, box)
             transform = (1 / (scale * spacing), 0, (self.center[horizontal] - width / (2 * scale)) / spacing - x_offset,
-                         0, 1 / (scale * dy), (self.center["y"] - height / (2 * scale)) / dy - y_offset)
+                         0, 1 / (scale * vertical_spacing), (self.center[vertical] - height / (2 * scale)) / vertical_spacing - y_offset)
             rendered[row, axis] = image.transform((width, height), Image.Transform.AFFINE, transform,
                                                   Image.Resampling.BILINEAR, fillcolor=canvas.cget("background"))
         return rendered

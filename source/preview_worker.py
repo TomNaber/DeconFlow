@@ -12,6 +12,7 @@ import h5py
 import numpy as np
 
 from source.channel_metadata import read_channels, text
+from source.psf_channels import load_psf_volume
 
 
 def display_range(volume):
@@ -64,7 +65,7 @@ def load_volume(path):
             projections.append({
                 **channel,
                 "xy": volume.max(axis=0),
-                "yz": volume.max(axis=2).T,
+                "yz": volume.max(axis=2),
                 "range": display_range(volume),
                 "color": color,
             })
@@ -87,7 +88,9 @@ class Log:
 def channel_settings(settings, index):
     indices = settings.get("CHANNEL_INDICES", list(range(len(settings["PSF_FILES"]))))
     filename = dict(zip(indices, settings["PSF_FILES"]))[index]
-    path = Path(settings["PSF_DIR"]).expanduser() / filename
+    path = Path(filename).expanduser()
+    if not path.is_absolute():
+        path = Path(settings.get("PSF_DIR", ".")).expanduser() / path
     try:
         stat = path.stat()
         fingerprint = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
@@ -95,7 +98,8 @@ def channel_settings(settings, index):
         fingerprint = (str(path), None)
     return {
         **{key: value for key, value in settings.items()
-           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES", "CHANNEL_ITERATIONS")},
+           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES", "CHANNEL_ITERATIONS", "CHANNEL_REGULARIZATION")},
+        "RLTV_REGULARIZATION": settings.get("CHANNEL_REGULARIZATION", {}).get(str(index), settings.get("RLTV_REGULARIZATION", .0001)),
         "ITERATIONS": settings.get("CHANNEL_ITERATIONS", {}).get(str(index), settings.get("ITERATIONS", 40)),
         "PSF_FILE": filename,
         "PSF_FINGERPRINT": fingerprint,
@@ -129,7 +133,7 @@ class PreviewCache:
             if "xy" in axes:
                 channel["xy"] = volume[slice(*bounds["z"]), :, :].max(axis=0)
             if "yz" in axes:
-                channel["yz"] = volume[:, :, slice(*bounds["x"])].max(axis=2).T
+                channel["yz"] = volume[:, :, slice(*bounds["x"])].max(axis=2)
             projections.append(channel)
         return projections
 
@@ -160,10 +164,7 @@ class PreviewCache:
                 del image
             fingerprint = channel_settings(settings, index)["PSF_FINGERPRINT"]
             if self.psfs.get(index, (None,))[0] != fingerprint:
-                psf = np.asarray(tifffile.imread(fingerprint[0]), dtype=np.float32).squeeze()
-                np.nan_to_num(psf, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-                np.maximum(psf, 0.0, out=psf)
-                psf /= psf.sum(dtype=np.float64)
+                psf = load_psf_volume(fingerprint[0])
                 path = self.directory / f"psf-{index}.tif"
                 tifffile.imwrite(path, np.ascontiguousarray(psf), photometric="minisblack",
                                  metadata={"axes": "ZYX"}, bigtiff=True)
@@ -223,13 +224,14 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             result = batch.run_fiji(None, None, label,
                                    session_directory=settings["FIJI_SESSION"],
                                    input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1],
-                                   report_geometry=False, iterations=processing["ITERATIONS"])
+                                   report_geometry=False, iterations=processing["ITERATIONS"],
+                                   regularization=processing["RLTV_REGULARIZATION"])
             shape = tuple(bounds[a][1] - bounds[a][0] for a in "zyx")
             if result.size != np.prod(shape):
                 raise ValueError("Deconvolution returned an unexpected image size.")
             started = perf_counter()
             stored = batch.store_result(result.reshape(shape))
-            projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2).T,
+            projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
                           # Stretch each result channel to its brightest voxel.
                           "range": (0.0, max(1.0, float(stored.max()))),
                           "processing": processing}

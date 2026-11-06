@@ -1,33 +1,43 @@
-"""Discover PSFs and normalize legacy C0 and current C1 filenames."""
+"""Discover TIFF PSFs without a manifest and validate their volume data."""
 
-import json
 import re
+from collections import Counter
 from pathlib import Path
 
 
-def read_psf_channels(folder):
-    folder = Path(folder)
-    manifest_path = folder / "psf_manifest.json"
-    if manifest_path.is_file():
-        entries = json.loads(manifest_path.read_text(encoding="utf-8"))["channels"]
-    else:
-        entries = [{"psf_file": path.name} for path in sorted(folder.glob("psf_C*.tif"))]
+def load_psf_volume(path):
+    import numpy as np
+    import tifffile
+
+    psf = np.asarray(tifffile.imread(path), dtype=np.float32).squeeze()
+    if psf.ndim != 3 or not all(psf.shape):
+        raise ValueError(f"PSF must be a 3D TIFF volume: {path}")
+    np.nan_to_num(psf, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.maximum(psf, 0.0, out=psf)
+    total = psf.sum(dtype=np.float64)
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError(f"PSF must contain positive intensity: {path}")
+    psf /= total
+    return np.ascontiguousarray(psf)
+
+
+def read_psf_channels(files, *, validate=False):
+    if isinstance(files, (str, Path)):
+        files = sorted(path for path in Path(files).iterdir()
+                       if path.suffix.lower() in (".tif", ".tiff"))
+    paths = list(dict.fromkeys(Path(path).expanduser().resolve() for path in files))
     parsed = []
-    for entry in entries:
-        filename = entry["psf_file"]
-        match = re.fullmatch(r"psf_C(\d+)_(.+)\.tiff?", filename, re.IGNORECASE)
-        if match is None:
-            raise ValueError(f"Expected a PSF filename like psf_C1_Alexa488.tif: {filename}")
-        if not (folder / filename).is_file():
-            raise ValueError(f"PSF file not found: {filename}")
-        parsed.append({**entry, "number": int(match[1]), "name": entry.get("name", match[2])})
-    if not parsed:
-        raise ValueError("No PSF files found in the selected PSF folder.")
+    for path in paths:
+        if not path.is_file() or path.suffix.lower() not in (".tif", ".tiff"):
+            raise ValueError(f"PSF TIFF file not found: {path}")
+        if validate:
+            load_psf_volume(path)
+        match = re.fullmatch(r"psf_C(\d+)_(.+)\.tiff?", path.name, re.IGNORECASE)
+        parsed.append({"psf_file": str(path), "name": match[2] if match else path.stem,
+                       "number": int(match[1]) if match else None})
     base = 0 if any(entry["number"] == 0 for entry in parsed) else 1
-    indices = set()
+    counts = Counter(entry["number"] for entry in parsed)
     for entry in parsed:
-        entry["index"] = entry.pop("number") - base
-        if entry["index"] in indices:
-            raise ValueError("Multiple PSFs have the same channel number.")
-        indices.add(entry["index"])
-    return sorted(parsed, key=lambda entry: entry["index"])
+        number = entry.pop("number")
+        entry["index"] = number - base if number is not None and counts[number] == 1 else None
+    return parsed
