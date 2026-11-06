@@ -10,6 +10,7 @@ import tifffile
 from PIL import Image, ImageTk
 from PIL.PngImagePlugin import PngInfo
 
+from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
 from source.psf_channels import load_psf_volume
 from source.preview_gestures import install_pinch
@@ -39,7 +40,7 @@ def read_spacing(path, fallback=None):
         return (1., 1., 1.), True
 
 
-def load_projections(assignments, spacing=None):
+def load_projections(assignments, spacing=None, names=None):
     """Read off the UI thread; return display data without retaining 3D volumes."""
     result = []
     loaded = {}
@@ -51,7 +52,8 @@ def load_projections(assignments, spacing=None):
             loaded[path] = dict(xy=volume.max(axis=0) / peak,
                                 yz=volume.max(axis=2) / peak,
                                 spacing=voxel, pixels=pixels)
-        result.append(dict(loaded[path], index=index, path=path))
+        result.append(dict(loaded[path], index=index, path=path,
+                           name=(names or {}).get(path, Path(path).stem)))
     return result
 
 
@@ -60,6 +62,8 @@ class PSFView(ttk.Frame):
         super().__init__(parent, padding=8)
         self.preferences, self.request, self.log, self.error = preferences, request, log, error
         self.channels = []
+        self.channel_visibility = {}
+        self.channel_contrast = {}
         self.original_colors = {}
         self.stale = True
         self.zoom = tk.DoubleVar(value=100)
@@ -79,6 +83,8 @@ class PSFView(ttk.Frame):
         self.actions_shell.pack(side='bottom',fill='x',pady=(8,0))
         self.actions = ttk.Frame(self.actions_shell)
         self.actions.pack(fill='both',expand=True)
+        self.adjustment_button = ttk.Button(self.actions, width=24, text='Show channel adjustment', state='disabled')
+        self.adjustment_button.pack(side='left', anchor='s', padx=(12, 4))
         self.export_button = ttk.Button(self.actions,text='Export screenshot…',command=self.export,state='disabled')
         self.export_button.pack(side='right',anchor='s')
         area = ttk.Frame(self)
@@ -113,16 +119,22 @@ class PSFView(ttk.Frame):
         self.export_button.configure(state='disabled')
 
     def display(self, channels, colors):
+        previous = {c['index']: (c['path'], c['name']) for c in self.channels}
+        retained = {c['index'] for c in channels if previous.get(c['index']) == (c['path'], c['name'])}
+        for settings in (self.channel_visibility, self.channel_contrast):
+            for index in settings.keys() - retained:
+                del settings[index]
         self.channels = channels
         self.original_colors = colors
         self.stale = False
         self.status.set('Unit pixel spacing used for PSFs without voxel metadata.'
                         if any(c['pixels'] for c in channels) else '')
         self.reset()
-        self.export_button.configure(state='normal')
 
-    def selected(self):
-        return [c for c in self.channels if self.preferences.get(str(c['index']), {}).get('enabled', True)]
+    def selected(self, visible_only=True):
+        return [c for c in self.channels
+                if self.preferences.get(str(c['index']), {}).get('enabled', True)
+                and (not visible_only or self.channel_visibility.get(c['index'], True))]
 
     def viewports(self, width, height):
         left, top, side, gap = pane_grid(width,height)
@@ -130,7 +142,7 @@ class PSFView(ttk.Frame):
 
     def scale(self, rects):
         extents = []
-        for channel in self.selected():
+        for channel in self.selected(visible_only=False):
             dz, dy, dx = channel['spacing']
             for axis, pixel_size in (('xy', (dx, dy)), ('yz', (dy, dz))):
                 h, w = channel[axis].shape
@@ -151,7 +163,8 @@ class PSFView(ttk.Frame):
                 dz, dy, dx = channel['spacing']
                 sx, sy = (dx, dy) if axis == 'xy' else (dy, dz)
                 horizontal, vertical = ('x', 'y') if axis == 'xy' else ('y', 'z')
-                array = channel[axis]
+                contrast = self.channel_contrast.get(channel['index'], NEUTRAL_CONTRAST)
+                array = apply_contrast(channel[axis], contrast)
                 ih, iw = array.shape
                 transform = (1 / (scale*sx), 0, iw/2 + self.center[horizontal]/sx - w/(2*scale*sx),
                              0, 1 / (scale*sy), ih/2 + self.center[vertical]/sy - h/(2*scale*sy))
@@ -170,6 +183,7 @@ class PSFView(ttk.Frame):
         return result
 
     def draw(self):
+        self.export_button.configure(state='normal' if not self.stale and self.selected() else 'disabled')
         self.zoom_label.set(f'{self.zoom.get():.0f}%')
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         if width <= 1 or height <= 1:
@@ -238,6 +252,7 @@ class PSFView(ttk.Frame):
             info = PngInfo()
             info.add_text('PSF', json.dumps(dict(zoom=self.zoom.get(), center=self.center,
                           channels=[dict(index=c['index'], color=self.preferences.get(str(c['index']),{}).get('color','Original'),
+                                         contrast=self.channel_contrast.get(c['index'], NEUTRAL_CONTRAST),
                                          spacing=c['spacing']) for c in self.selected()])))
             image.save(path, pnginfo=info)
             self.log(f'Saved screenshot: {path}\n')

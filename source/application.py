@@ -19,6 +19,7 @@ from tkinter.scrolledtext import ScrolledText
 import h5py
 
 from app_version import __version__
+from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST
 from source.channel_metadata import read_channels, text
 from source.edit_ims_channels import NAMED_COLORS
 from source.platform_support import default_fiji_executable, process_session_options, stop_process_tree
@@ -122,6 +123,9 @@ class Application:
         left.rowconfigure(0,weight=1)
         outer = ttk.Notebook(left)
         outer.grid(row=0,column=0,sticky='nsew')
+        # Native themes can draw the notebook border inside its widget bounds.
+        notebook_padding = w.tk.splitlist(ttk.Style(w).lookup('TNotebook','padding') or '0')
+        side_padding = (notebook_padding[0], notebook_padding[2] if len(notebook_padding)>2 else notebook_padding[0])
         page = ttk.Frame(outer)
         outer.add(page,text='Richardson-Lucy deconvolution with Gibson-Lanni PSF')
         page.columnconfigure(0,weight=1)
@@ -186,22 +190,30 @@ class Application:
         self.field(self.deconvolution,'Deconvolution',1,'RLTV_NON_CIRCULANT','Non-circulant boundary correction',True,bool)
         self.channel_panel = ttk.Frame(self.deconvolution)
         self.channel_panel.grid(row=2,column=0,columnspan=2,sticky='ew',pady=8)
-        actions = ttk.Frame(left,padding=(4,8))
-        actions.grid(row=1,column=0,sticky='ew')
-        self.run_button = ttk.Button(actions,text='Run batch',command=lambda:self.request('batch'))
+        actions = ttk.Frame(left,padding=(0,2,0,8))
+        actions.grid(row=2,column=0,sticky='ew',padx=side_padding)
+        self.run_button = ttk.Button(actions,text='Run batch deconvolution',command=lambda:self.request('batch'))
         self.run_button.pack(side='left')
         self.cancel_button = ttk.Button(actions,text='Cancel',command=self.cancel,state='disabled')
         self.cancel_button.pack(side='left',padx=5)
         self.restore_button = ttk.Button(actions,text='Restore defaults',command=self.restore_defaults)
         self.restore_button.pack(side='right')
+        self.channel_adjustment = ChannelAdjustment(left, self.adjust_channel)
+        self.channel_adjustment.grid(row=1,column=0,sticky='ew',pady=(2,0))
+        self.channel_adjustment.grid_remove()
+        self.adjustment_open = False
+        self.channel_adjustment.table.bind('<Configure>',self.schedule_settings_layout,add='+')
+        left.bind('<Configure>',self.schedule_settings_layout,add='+')
         self.console = ScrolledText(left,width=1,height=9,state='disabled',wrap='word')
-        self.console.grid(row=2,column=0,sticky='ew',pady=(4,0))
+        self.console.grid(row=3,column=0,sticky='ew',padx=side_padding,pady=(4,0))
         right = ttk.Notebook(workspace)
         right.grid(row=0,column=1,sticky='nsew',padx=(5,10),pady=10)
         self.preview = Preview(right,self.preferences,self.refresh_input,self.error)
         right.add(self.preview,text='Preview deconvolution')
         self.psf_view = PSFView(right,self.preferences,lambda:self.request('view'),self.log,self.error)
         right.add(self.psf_view,text='View PSF')
+        for view in (self.preview, self.psf_view):
+            view.adjustment_button.configure(command=self.toggle_channel_adjustment)
         self.viewer_layout_job = None
         for view in (self.preview,self.psf_view):
             for section in ('toolbar','actions'):
@@ -240,6 +252,12 @@ class Application:
 
     def fit_settings(self):
         self.settings_layout_job = None
+        if self.adjustment_open:
+            left = self.channel_adjustment.master
+            actions_height = self.run_button.master.winfo_reqheight()
+            # Preserve room for the settings viewport, even when the rows scroll.
+            available = left.winfo_height() - actions_height - self.console.winfo_reqheight() - 165
+            self.channel_adjustment.fit_height(available)
         width = self.settings_canvas.winfo_width()
         viewport_height = self.settings_canvas.winfo_height()
         content_height = self.controls.winfo_reqheight()
@@ -283,14 +301,17 @@ class Application:
     def scroll_settings(self,event):
         target = self.window.winfo_containing(event.x_root,event.y_root)
         while target is not None:
-            if target is self.controls or target is self.settings_canvas:
-                if self.controls.winfo_reqheight() <= self.settings_canvas.winfo_height():
-                    self.settings_canvas.yview_moveto(0)
-                    return 'break'
+            if target is self.channel_adjustment:
+                canvas = self.channel_adjustment.canvas
+            elif target is self.controls or target is self.settings_canvas:
+                canvas = self.settings_canvas
+            else:
+                canvas = None
+            if canvas is not None:
                 units = -1 if getattr(event,'num',None)==4 else 1 if getattr(event,'num',None)==5 else -event.delta
                 if abs(units)>=120:
                     units/=120
-                self.settings_canvas.yview_scroll(int(units),'units')
+                canvas.yview_scroll(int(units),'units')
                 return 'break'
             target = getattr(target,'master',None)
 
@@ -441,7 +462,9 @@ class Application:
             self.invalidate(psf=True)
 
     def selection_changed(self,key):
-        self.preferences[key]['enabled'] = self.enabled_vars[key].get()
+        enabled = self.enabled_vars[key].get()
+        self.preferences[key]['enabled'] = enabled
+        self.preview.channel_visibility[int(key)] = enabled
         self.render_definitions()
         self.render_external_channels()
         self.render_channels()
@@ -775,9 +798,10 @@ class Application:
             generator = request['generator']
             spacing = (generator['Z_STEP_UM'],generator['XY_PIXEL_SIZE_UM'],generator['XY_PIXEL_SIZE_UM']) if generator else None
             colors = {c['index']:c['color'] for c in self.active_channels}
+            names = {c['psf_file']:c['name'] for c in catalog}
             def load():
                 try:
-                    self.events.put(('view',token,load_projections(assignments,spacing),colors))
+                    self.events.put(('view',token,load_projections(assignments,spacing,names),colors))
                 except Exception as error:
                     self.events.put(('view_error',token,str(error)))
             thread = threading.Thread(target=load,daemon=True)
@@ -894,9 +918,58 @@ class Application:
         self.preview.set_disabled(locked)
         self.restore_button.configure(state='disabled' if locked else 'normal')
 
+    def toggle_channel_adjustment(self):
+        self.adjustment_open = not self.adjustment_open
+        self.update_channel_adjustment()
+        self.schedule_settings_layout()
+
+    def update_channel_adjustment(self):
+        loaded = self.preview.data is not None or bool(self.psf_view.channels)
+        self.adjustment_open = loaded and self.adjustment_open
+        label = 'Hide channel adjustment' if self.adjustment_open else 'Show channel adjustment'
+        for view in (self.preview, self.psf_view):
+            view.adjustment_button.configure(text=label, state='normal' if loaded else 'disabled')
+        if not self.adjustment_open:
+            self.channel_adjustment.grid_remove()
+            return
+
+        rows = []
+        for row, kind in enumerate(('Original', 'Deconvolved')):
+            contrast = self.preview.channel_contrast[row]
+            for channel in sorted(self.preview.display_channels(row, visible_only=False), key=lambda c: c['index']):
+                index = channel['index']
+                rows.append((kind, index, channel['name'], self.preview.channel_visible(index),
+                             contrast.get(index, NEUTRAL_CONTRAST)))
+        for channel in sorted(self.psf_view.selected(visible_only=False), key=lambda c: c['index']):
+            index = channel['index']
+            rows.append(('PSF', index, channel['name'], self.psf_view.channel_visibility.get(index, True),
+                         self.psf_view.channel_contrast.get(index, NEUTRAL_CONTRAST)))
+        self.channel_adjustment.grid()
+        if self.channel_adjustment.display(tuple(rows)):
+            self.schedule_settings_layout()
+
+    def adjust_channel(self, kind, index, *, visible=None, contrast=None):
+        if kind == 'PSF':
+            visibility = self.psf_view.channel_visibility
+            contrasts = self.psf_view.channel_contrast
+            redraw = self.psf_view.draw
+        else:
+            visibility = self.preview.channel_visibility
+            contrasts = self.preview.channel_contrast[kind == 'Deconvolved']
+            redraw = self.preview.recolor
+        if visible is not None:
+            visibility[index] = visible
+        if contrast is not None:
+            if contrasts.get(index, NEUTRAL_CONTRAST) == contrast:
+                return
+            contrasts[index] = contrast
+        redraw()
+        self.update_channel_adjustment()
+
     def update_activity(self):
         if self.loading:
             return
+        self.update_channel_adjustment()
         indices = self.enabled_indices()
         ready = self.can_resolve(indices)
         self.run_button.configure(state='normal' if ready and not self.batch_locked else 'disabled')

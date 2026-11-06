@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageTk
 from PIL.PngImagePlugin import PngInfo
 
+from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
 from source.preview_gestures import install_pinch
@@ -22,13 +23,15 @@ from source.platform_support import stop_process_tree
 
 
 
-def composite(channels, axis, preferences):
+def composite(channels, axis, preferences, contrast=None):
     result = np.zeros((*channels[0][axis].shape, 3), dtype=np.float32)
     for channel in channels:
         selected = preferences.get(str(channel["index"]), {}).get("color", "Original")
         color = NAMED_COLORS.get(selected, channel["color"])
         low, high = channel["range"]
         intensity = np.clip((channel[axis].astype(np.float32) - low) / (high - low), 0, 1)
+        if contrast:
+            intensity = apply_contrast(intensity, contrast.get(channel["index"], NEUTRAL_CONTRAST))
         result += intensity[..., None] * np.asarray(color, dtype=np.float32)
     return Image.fromarray(np.rint(np.clip(result, 0, 1) * 255).astype(np.uint8))
 
@@ -54,6 +57,8 @@ class Preview(ttk.Frame):
         self.events = queue.Queue()
         self.data = None
         self.deconvolved = None
+        self.channel_visibility = {}
+        self.channel_contrast = ({}, {})
         self.busy = None
         self.revision = 0
         self.pending = None
@@ -96,8 +101,12 @@ class Preview(ttk.Frame):
         self.deconvolve_button.grid(row=0, column=0, sticky="w")
         self.cancel_button = ttk.Button(actions, text="Cancel", command=lambda: self.on_cancel(), state="disabled")
         self.cancel_button.grid(row=0, column=1, sticky="w", padx=(5, 0))
-        self.sync_button = ttk.Checkbutton(actions, text="Sync preview", variable=self.sync, command=self.sync_changed)
-        self.sync_button.grid(row=0, column=2, sticky="w", padx=8)
+        adjustment = ttk.Frame(actions)
+        adjustment.grid(row=0, column=2, sticky="w", padx=(8, 4))
+        self.sync_button = ttk.Checkbutton(adjustment, text="Sync preview", variable=self.sync, command=self.sync_changed)
+        self.sync_button.pack(side="left")
+        self.adjustment_button = ttk.Button(adjustment, width=24, text="Show channel adjustment", state="disabled")
+        self.adjustment_button.pack(side="left", padx=(12, 0))
         self.export_button = ttk.Button(actions, text="Export screenshot…", command=self.export_screenshot, state="disabled")
         self.export_button.grid(row=0, column=3, sticky="e")
         actions.columnconfigure(2, weight=1)
@@ -106,18 +115,19 @@ class Preview(ttk.Frame):
         def layout_actions(event=None):
             nonlocal action_layout
             required = sum(button.winfo_reqwidth() for button in
-                           (self.deconvolve_button, self.cancel_button, self.sync_button, self.export_button)) + 21
+                           (self.deconvolve_button, self.cancel_button, adjustment, self.export_button)) + 17
             compact = self.master.winfo_width() - 24 < required
-            self.actions_height = (max(self.deconvolve_button.winfo_reqheight(), self.cancel_button.winfo_reqheight())
-                                   + 5 + max(self.sync_button.winfo_reqheight(), self.export_button.winfo_reqheight())
-                                   if compact else max(button.winfo_reqheight() for button in
-                                   (self.deconvolve_button,self.cancel_button,self.sync_button,self.export_button)))
+            top_height = max(button.winfo_reqheight() for button in
+                             (self.deconvolve_button, self.cancel_button, self.export_button))
+            adjustment_height = adjustment.winfo_reqheight()
+            self.actions_height = (top_height + 5 + adjustment_height if compact
+                                   else max(top_height, adjustment_height))
             if compact != action_layout:
                 action_layout = compact
-                self.sync_button.grid_configure(row=1 if compact else 0, column=0 if compact else 2,
-                                                columnspan=2 if compact else 1, pady=(5, 0) if compact else 0)
-                self.export_button.grid_configure(row=1 if compact else 0, column=2 if compact else 3,
-                                                  columnspan=2 if compact else 1, pady=(5, 0) if compact else 0)
+                adjustment.grid_configure(row=1 if compact else 0, column=0 if compact else 2,
+                                          columnspan=4 if compact else 1,
+                                          padx=(0, 4) if compact else (8, 4),
+                                          pady=(5, 0) if compact else 0)
 
         self.layout_actions = layout_actions
         actions.bind("<Configure>", layout_actions)
@@ -181,6 +191,19 @@ class Preview(ttk.Frame):
         self.recolor()
         self.parameters_changed()
         self.update_controls()
+
+    def channel_visible(self, index):
+        return self.channel_visibility.get(
+            index, self.preferences.get(str(index), {}).get("enabled", True))
+
+    def display_channels(self, row, visible_only=True):
+        data = self.deconvolved if row else self.data
+        if data is None:
+            return []
+        eligible = self.selected_channels if row else None
+        return [channel for channel in data["channels"]
+                if (eligible is None or channel["index"] in eligible)
+                and (not visible_only or self.channel_visible(channel["index"]))]
 
     def set_folder(self, folder):
         self.folder = Path(folder).expanduser()
@@ -448,14 +471,13 @@ class Preview(ttk.Frame):
             self.photos.clear()
             for canvas in self.canvases.values():
                 canvas.delete("all")
-            for row, data in enumerate((self.data, self.deconvolved)):
-                if data is None:
-                    continue
-                channels = [channel for channel in data["channels"] if channel["index"] in self.selected_channels]
+            for row, contrast in enumerate(self.channel_contrast):
+                channels = self.display_channels(row)
                 if channels:
                     for axis in ("xy", "yz"):
-                        self.images[row, axis] = composite(channels, axis, self.preferences)
+                        self.images[row, axis] = composite(channels, axis, self.preferences, contrast)
             self.draw()
+            self.export_button.configure(state="normal" if self.images and not self.disabled else "disabled")
 
     def reset_zoom(self):
         self.end_pan()
@@ -588,6 +610,7 @@ class Preview(ttk.Frame):
                     except (OSError, EOFError):
                         pass
                 self.recolor()
+                self.on_activity()
             self.schedule_draw()
             self.schedule_projection()
 
@@ -704,7 +727,7 @@ class Preview(ttk.Frame):
         for axis, canvas in zip(("xy", "yz"), canvases):
             image.paste(rendered[row, axis], (canvas.winfo_rootx() - left, canvas.winfo_rooty() - top))
         data = self.deconvolved if row else self.data
-        channels = [channel for channel in data["channels"] if channel["index"] in self.selected_channels]
+        channels = self.display_channels(row)
         stem = Path(data["path"]).stem
         if row:
             tags = [f"iter{channel['processing']['ITERATIONS']}_reg{format(channel['processing']['RLTV_REGULARIZATION'], '.10g')}"
@@ -721,6 +744,7 @@ class Preview(ttk.Frame):
             "channels": [{"index": channel["index"], "name": channel["name"],
                           "display_range": list(channel["range"]),
                           "color": self.preferences.get(str(channel["index"]), {}).get("color", "Original"),
+                          "contrast": self.channel_contrast[row].get(channel["index"], NEUTRAL_CONTRAST),
                           "processing": channel.get("processing")} for channel in channels],
         }
         return image, f"{stem}_max_projection.png", metadata
@@ -806,6 +830,9 @@ class Preview(ttk.Frame):
             self.cache_directory = None
         self.data = None
         self.deconvolved = None
+        self.channel_visibility.clear()
+        for contrast in self.channel_contrast:
+            contrast.clear()
         self.crop = None
         self.crop_drag = None
         self.end_pan()
