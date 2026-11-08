@@ -36,6 +36,7 @@ def main():
         parser.error('Install the build dependency: python -m pip install -r requirements-build.txt')
     subprocess.run([sys.executable, '-m', 'pip', 'check'], check=True)
     subprocess.run([sys.executable, '-c',
+                    'import sys; sys.path.insert(0, "source"); '
                     'import tkinter, psfmodels, napari_vipp_imaris; '
                     'import source.preview, source.batch_deconvolve_ims; '
                     'import source.generate_gibson_lanni_psfs'], cwd=ROOT, check=True)

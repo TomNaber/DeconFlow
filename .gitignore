@@ -9,3 +9,4 @@ examples/*
 *__pycache__
 input/*
 dist/
+builds/
