@@ -8,8 +8,7 @@ Download the setup for your platform from [Releases](https://github.com/TomNaber
 - **Windows x64:** run `Setup.exe` (Windows 10+).
 
 Python, Java, and ImageJ are included. GPU processing needs an OpenCL driver
-(on Windows, install your GPU vendor's driver). RC builds are unsigned; your OS
-may require approval to open them.
+(on Windows, install your GPU vendor's driver).
 
 ## Dev install
 
