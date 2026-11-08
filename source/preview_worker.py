@@ -230,13 +230,16 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             if result.size != np.prod(shape):
                 raise ValueError("Deconvolution returned an unexpected image size.")
             started = perf_counter()
-            stored = batch.store_result(result.reshape(shape))
+            result = result.reshape(shape)
+            if settings.get('POST_PROCESSING', False):
+                result = batch.post_process(result, settings.get('CHANNEL_POST_PROCESSING', {}).get(str(index), {}))
+            stored = batch.store_result(result)
             projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
                           "range": display_range(stored),
                           "processing": processing}
             cache.results[index] = projection
             del result, stored
-        projections.append(projection)
+        projections.append({**projection, "name": output_name})
     return {**cache.original, "channels": projections, "settings": public_settings, "crop": bounds}
 
 

@@ -39,6 +39,8 @@ TEMP_DIR = Path(gettempdir())
 ITERATIONS = 40
 CHANNEL_ITERATIONS = {}
 CHANNEL_REGULARIZATION = {}
+POST_PROCESSING = False
+CHANNEL_POST_PROCESSING = {}
 RLTV_REGULARIZATION = 0.0001
 RLTV_NON_CIRCULANT = True
 FIJI_MEMORY = "12g"
@@ -248,6 +250,17 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
     return np.ascontiguousarray(result)
 
 
+def post_process(result, settings):
+    """Filter a deconvolved ZYX volume before quantization and projection."""
+    method = settings.get('filter', 'None')
+    if method == 'None':
+        return result
+    if method != 'Median filter' or settings.get('kernel', 3) not in (3, 5, 7):
+        raise ValueError('Select None or Median filter with a kernel of 3, 5, or 7 voxels.')
+    from scipy.ndimage import median_filter
+    return median_filter(result, size=settings.get('kernel', 3), mode='reflect')
+
+
 def store_result(result):
     np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     np.maximum(result, 0.0, out=result)
@@ -280,6 +293,8 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 result = run_fiji(image, psfs[channel_index], label,
                                   iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS),
                                   regularization=CHANNEL_REGULARIZATION.get(str(channel_index), RLTV_REGULARIZATION))
+                if POST_PROCESSING:
+                    result = post_process(result, CHANNEL_POST_PROCESSING.get(str(channel_index), {}))
                 stored = store_result(result)
                 saturated = int(np.count_nonzero(result > 65535))
             stored_max = int(stored.max())
@@ -447,7 +462,8 @@ def main():
     names = ('INPUT_DIR', 'OUTPUT_DIR', 'TEMP_DIR', 'PSF_DIR', 'PSF_FILES',
              'PSF_SOURCE', 'ITERATIONS', 'CHANNEL_ITERATIONS', 'CHANNEL_REGULARIZATION',
              'RLTV_REGULARIZATION', 'RLTV_NON_CIRCULANT',
-             'FIJI_MEMORY', 'OVERWRITE', 'CHANNEL_EDITS', 'CHANNEL_INDICES')
+             'FIJI_MEMORY', 'OVERWRITE', 'CHANNEL_EDITS', 'CHANNEL_INDICES',
+             'POST_PROCESSING', 'CHANNEL_POST_PROCESSING')
     settings = {name: str(globals()[name].expanduser().resolve())
                 if isinstance(globals()[name], Path) else globals()[name] for name in names}
     if PSF_SOURCE == 'internal':

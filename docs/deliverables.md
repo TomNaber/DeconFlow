@@ -93,3 +93,13 @@ It builds on native Apple Silicon, Intel, and Windows runners, checks relocated
 launchers, uploads artifacts, and creates a **draft prerelease** only after all
 three builds succeed. It never publishes automatically. Existing release tags
 are not overwritten. Complete native GPU acceptance before publishing.
+
+## Optional post-processing
+
+Enable **Post-processing** in the Deconvolution group to reveal per-channel
+output names, **None** / **Median filter**, and kernel sizes **3**, **5**, or **7**
+voxels (default 3). Median filtering uses a cubic 3D neighborhood with reflected
+borders after deconvolution and before uint16 conversion. Preview and IMS export
+use the same filter. Disabled channels remain unchanged. With post-processing
+off (the default), existing deconvolution behavior and output names are retained.
+Settings are saved between sessions and included in batch reports. SciPy is bundled.
