@@ -6,6 +6,8 @@ try {
     $env:CONDA_PREFIX = $runtime
     $env:PATH = "$runtime;$runtime\Library\bin;$runtime\Scripts;$env:PATH"
     Remove-Item Env:PYTHONHOME, Env:PYTHONPATH -ErrorAction SilentlyContinue
+    Remove-Item Env:JAVA_TOOL_OPTIONS, Env:JDK_JAVA_OPTIONS, Env:_JAVA_OPTIONS, Env:CLASSPATH -ErrorAction SilentlyContinue
+    $env:PYTHONUTF8 = '1'
     if (-not (Test-Path "$runtime\.ready")) {
         $lock = [System.IO.File]::Open("$runtime.lock", 'OpenOrCreate', 'ReadWrite', 'None')
         try {
@@ -29,6 +31,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Application exited with code $LASTEXITCODE." }
 } catch {
     Write-Host $_ -ForegroundColor Red
-    Read-Host 'Press Enter to close'
+    if (-not $env:CI) { Read-Host 'Press Enter to close' }
     exit 1
 }

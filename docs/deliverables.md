@@ -2,7 +2,7 @@
 
 The version lives in `app_version.py`. Update it before building a release; it
 appears in the window title, `python main.py --version`, archive names, and the
-macOS bundle metadata. The initial version is 0.1.0.
+macOS bundle metadata. The staged candidate is 1.0.0rc1. Native installer metadata uses numeric versions.
 
 Build on each target OS and architecture: Apple Silicon macOS 14+, Intel macOS
 13+, and Windows x64. These minimums reflect the pinned CLIJ2-FFT native binaries
@@ -18,16 +18,18 @@ python -m pip install -r requirements-build.txt
 On macOS:
 
 ```sh
-bash scripts/build_macos.sh
+bash scripts/build_macos.sh --installer
 ```
 
 On Windows, use PowerShell with the environment activated:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 --installer
 ```
 
-Both accept `--output PATH` and write a versioned ZIP and SHA-256 file into
+Windows installer builds require Inno Setup 6 (available on the Windows CI runner).
+With `--installer`, builds also produce a macOS DMG or a per-user Windows Setup.exe
+and its SHA-256 checksum. Both accept `--output PATH` and write a versioned ZIP and SHA-256 file into
 `dist/` by default. Existing release files are never overwritten. Builds check
 installed dependencies, native imports, and Java before packaging. They also run
 `scripts/setup_imagej.py` to automatically provision Java 21 in the build
@@ -41,8 +43,9 @@ relocation details.
 
 ## Running a deliverable
 
-- macOS: extract the ZIP, move `Batch Deconvolution.app` to Applications, and open it.
-- Windows: extract the entire ZIP and double-click `Launch.cmd` inside its folder.
+- macOS: open the DMG (or extract the ZIP), move `Batch Deconvolution.app` to Applications, and open it.
+- Windows: run Setup.exe and use the Start menu shortcut, or extract the entire
+  portable ZIP and double-click `Launch.cmd` inside its folder.
 
 Python, Tk, Java 21, Python dependencies, and the pinned headless ImageJ/CLIJ2
 runtime are bundled. Users do not need Conda or Fiji and do not select an
@@ -73,7 +76,7 @@ and job files use temporary directories. The ImageJ app folder may be read-only.
 A missing or corrupt packaged ImageJ runtime requires reinstalling the release.
 Source installations can be repaired with `python scripts/setup_imagej.py`.
 
-These are unsigned deliverables, not signed/notarized installers. macOS security
+These setups and portable archives are unsigned and are not notarized. macOS security
 policy may block downloaded builds until approved by the user or administrator.
 Before distributing a release, verify GUI startup, PSF generation, preview, and
 IMS export on a clean machine for each target architecture. A successful build
@@ -81,3 +84,12 @@ does not validate the target machine's GPU/OpenCL setup. Java is bundled from
 the build environment; ImageJ artifact versions are fixed by the manifest.
 Any manifest upgrade must repeat numerical, lifecycle, and native-platform
 validation before release.
+
+## Staging RC1
+
+Push the RC commit to `codex/release-1.0.0rc1`, or run the **Stage release candidate**
+workflow manually from the release commit.
+It builds on native Apple Silicon, Intel, and Windows runners, checks relocated
+launchers, uploads artifacts, and creates a **draft prerelease** only after all
+three builds succeed. It never publishes automatically. Existing release tags
+are not overwritten. Complete native GPU acceptance before publishing.

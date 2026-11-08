@@ -1,0 +1,95 @@
+name: Stage release candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/release-1.0.0rc1]
+
+concurrency:
+  group: stage-rc1-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos
+            arch: arm64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x86_64
+          - runner: windows-2022
+            platform: windows
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          activate-environment: batch-deconvolution
+          environment-file: environment.yml
+          auto-activate-base: false
+      - name: Install packaging dependency
+        run: python -m pip install -r requirements-build.txt
+      - name: Verify target architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: python -c "import os, platform; assert platform.machine().lower().replace('amd64', 'x86_64') == os.environ['EXPECTED_ARCH']"
+      - name: Build complete setup and portable archive
+        run: python scripts/build_deliverable.py --platform ${{ matrix.platform }} --installer
+      - name: Verify relocated macOS launcher
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/relocated app"
+          ditto -x -k dist/*.zip "$RUNNER_TEMP/relocated app"
+          env -u PYTHONHOME -u PYTHONPATH -u JAVA_HOME -u CONDA_PREFIX PATH=/usr/bin:/bin:/usr/sbin:/sbin "$RUNNER_TEMP/relocated app/Batch Deconvolution.app/Contents/MacOS/Batch Deconvolution" --version
+      - name: Verify Windows setup and relocated launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist/*-Setup.exe).FullName
+          $destination = Join-Path $env:RUNNER_TEMP 'installed app'
+          $process = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$destination`"") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Installer failed' }
+          Remove-Item Env:JAVA_HOME, Env:CONDA_PREFIX, Env:PYTHONHOME, Env:PYTHONPATH -ErrorAction SilentlyContinue
+          $env:PATH = "$env:SystemRoot\system32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          & "$destination\Launch.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed launcher failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  stage:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: setup-*
+          path: dist
+          merge-multiple: true
+      - name: Stage draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version=$(python -c 'from app_version import __version__; print(__version__)')
+          cd dist
+          sha256sum --check *.sha256
+          cd ..
+          gh release create "v$version" dist/* --target "$GITHUB_SHA" --draft --prerelease --title "1.0.0 RC1" --notes-file docs/releases/1.0.0rc1.md

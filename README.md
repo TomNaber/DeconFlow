@@ -1,13 +1,19 @@
 # Batch Deconvolution
 
-Supports macOS 14 or newer on Apple Silicon, macOS 13 or newer on Intel,
-and Windows x64. These macOS minimums come from the pinned CLIJ2-FFT binaries. GPU
-processing requires a working OpenCL driver; Windows users should install their
-GPU vendor's driver. Native GPU validation currently covers Apple Silicon;
-see [platform verification](docs/platform-verification.md) for remaining checks.
+## Install
 
-Install [Miniforge](https://github.com/conda-forge/miniforge), then run these
-commands from a terminal with Conda available:
+Download the setup for your platform from [Releases](https://github.com/TomNaber/Imaris-Batch-Deconvolution/releases).
+
+- **macOS:** open the DMG and drag the app to Applications (Apple Silicon: macOS 14+; Intel: macOS 13+).
+- **Windows x64:** run `Setup.exe` (Windows 10+).
+
+Python, Java, and ImageJ are included. GPU processing needs an OpenCL driver
+(on Windows, install your GPU vendor's driver). RC builds are unsigned; your OS
+may require approval to open them.
+
+## Dev install
+
+Install [Miniforge](https://github.com/conda-forge/miniforge), then run:
 
 ```sh
 git clone https://github.com/TomNaber/Imaris-Batch-Deconvolution.git

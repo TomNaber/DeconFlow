@@ -12,7 +12,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from app_version import __version__
+from app_version import __version__, NATIVE_VERSION, BUILD_VERSION
 from scripts.setup_imagej import install as install_imagej
 from source.imagej_runtime import manifest as imagej_manifest, java_executable
 
@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--platform', choices=('macos', 'windows'), required=True)
     parser.add_argument('--output', type=Path, default=ROOT / 'dist')
+    parser.add_argument('--installer', action='store_true', help='Also build a macOS DMG or Windows Setup.exe (requires Inno Setup 6).')
     args = parser.parse_args()
     expected = 'Darwin' if args.platform == 'macos' else 'Windows'
     if platform.system() != expected:
@@ -50,7 +51,8 @@ def main():
     name = f'Batch-Deconvolution-{__version__}-{args.platform}-{arch}'
     archive = output / f'{name}.zip'
     checksum = output / f'{name}.zip.sha256'
-    if archive.exists() or checksum.exists():
+    installer = output / (f'{name}.dmg' if args.platform == 'macos' else f'{name}-Setup.exe')
+    if archive.exists() or checksum.exists() or (args.installer and installer.exists()):
         parser.error(f'Release output already exists: {archive}. Move it or use --output.')
     with tempfile.TemporaryDirectory(prefix='batch-release-') as staging:
         stage = Path(staging)
@@ -89,8 +91,8 @@ def main():
                     'CFBundleIdentifier': 'org.batch-deconvolution.app',
                     'CFBundleExecutable': executable.name,
                     'CFBundlePackageType': 'APPL',
-                    'CFBundleShortVersionString': __version__,
-                    'CFBundleVersion': __version__,
+                    'CFBundleShortVersionString': NATIVE_VERSION,
+                    'CFBundleVersion': NATIVE_VERSION,
                     'LSMinimumSystemVersion': imagej_manifest()['minimum_macos'][arch],
                     'NSHighResolutionCapable': True,
                 }, stream)
@@ -106,9 +108,30 @@ def main():
         else:
             shutil.make_archive(str(stage / 'release'), 'zip', stage, bundle.name)
         shutil.move(str(temporary_archive), archive)
+        if args.installer:
+            if args.platform == 'macos':
+                disk = stage / 'disk'
+                disk.mkdir()
+                subprocess.run(['ditto', str(bundle), str(disk / bundle.name)], check=True)
+                (disk / 'Applications').symlink_to('/Applications')
+                subprocess.run(['hdiutil', 'create', '-volname', f'Batch Deconvolution {__version__}',
+                                '-srcfolder', str(disk), '-format', 'UDZO', str(installer)], check=True)
+            else:
+                compiler = shutil.which('ISCC.exe')
+                if compiler is None:
+                    compiler = str(Path('C:/Program Files (x86)/Inno Setup 6/ISCC.exe'))
+                subprocess.run([compiler, f'/DAppVersion={__version__}',
+                                f'/DNativeVersion={BUILD_VERSION}', f'/DSourceDir={bundle}',
+                                f'/DOutputDir={output}', f'/DOutputName={installer.stem}',
+                                str(ROOT / 'scripts/packaging/windows.iss')], check=True)
     with archive.open('rb') as stream:
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     checksum.write_text(f'{digest}  {archive.name}\n')
+    if args.installer:
+        with installer.open('rb') as stream:
+            installer_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        installer.with_suffix(installer.suffix + '.sha256').write_text(f'{installer_digest}  {installer.name}\n')
+        print(f'Created {installer}')
     print(f'Created {archive}\nSHA-256: {digest}')
 
 

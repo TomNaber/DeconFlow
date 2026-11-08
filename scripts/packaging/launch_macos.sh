@@ -6,6 +6,8 @@ mkdir -p "$cache"
 exec >>"$cache/launcher.log" 2>&1
 runtime="$cache/runtime-@BUILD_ID@"
 unset PYTHONHOME PYTHONPATH
+unset JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS CLASSPATH
+export PATH="$runtime/bin:$PATH"
 if [ ! -f "$runtime/.ready" ]; then
     # Never run two relocations against the same environment.
     mkdir "$runtime.lock" || exit 1
