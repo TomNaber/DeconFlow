@@ -112,7 +112,7 @@ jobs:
               gh api --method POST "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$name" \
                 -H 'Content-Type: application/octet-stream' --input "$asset" --silent
             done
-            jq -n --arg target "$GITHUB_SHA" --rawfile body docs/releases/1.0.0rc1.md \
-              '{target_commitish: $target, body: $body, draft: true, prerelease: true}' > release-update.json
+            jq -n --arg tag "$tag" --arg target "$GITHUB_SHA" --rawfile body docs/releases/1.0.0rc1.md \
+              '{tag_name: $tag, target_commitish: $target, body: $body, draft: true, prerelease: true}' > release-update.json
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input release-update.json --silent
           fi
