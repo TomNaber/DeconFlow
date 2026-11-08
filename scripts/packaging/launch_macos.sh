@@ -13,6 +13,7 @@ if [ ! -f "$runtime/.ready" ]; then
     mkdir -p "$runtime"
     tar -xzf "$resources/runtime.tar.gz" -C "$runtime"
     "$runtime/bin/python" "$runtime/bin/conda-unpack"
+    "$runtime/@JAVA_HOME@/bin/java" -version
     touch "$runtime/.ready"
     rmdir "$runtime.lock"
     trap - EXIT

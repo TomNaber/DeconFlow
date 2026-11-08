@@ -175,7 +175,7 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import batch_deconvolve_ims as batch
 
-    for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_EXECUTABLE", "FIJI_MEMORY"):
+    for name in ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT", "FIJI_MEMORY"):
         value = settings.get(name, 40) if name == "ITERATIONS" else settings[name]
         if isinstance(getattr(batch, name), Path):
             value = Path(value).expanduser()

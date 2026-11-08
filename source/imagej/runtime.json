@@ -1,0 +1,1362 @@
+{
+  "schema_version": 1,
+  "runtime_id": "imagej-clij2-2026-11-08",
+  "java_major": 21,
+  "versions": {
+    "imagej-common": "2.1.1",
+    "imagej-ops": "2.2.0",
+    "scifio": "0.49.0",
+    "scijava-common": "2.100.1",
+    "jython": "2.7.4",
+    "clij2": "2.5.3.5",
+    "clij2-fft": "2.2.0.22"
+  },
+  "artifacts": [
+    {
+      "path": "jars/autocomplete-3.3.2.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/autocomplete-3.3.2.jar-20260716221137",
+      "sha256": "6e7fb86d3f55f69f13a200a4daa6a04e1b753f8fd369da057b4d792adc694350",
+      "version": "3.3.2",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/fifesoft/autocomplete/3.3.2/autocomplete-3.3.2.pom",
+      "licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://github.com/bobbylight/AutoComplete/blob/master/LICENSE.md"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/bridj-0.7.0.jar",
+      "url": "https://sites.imagej.net/clij/jars/bridj-0.7.0.jar-20181201213334",
+      "sha256": "101bcd9b6637e6bc16e56deb3daefba62b1f5e8e9e37e1b3e56e3b5860d659cf",
+      "version": "0.7.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/nativelibs4java/nativelibs4java-parent/1.9/nativelibs4java-parent-1.9.pom",
+      "licenses": [
+        {
+          "name": "New BSD License (GPL-compatible)",
+          "url": "http://code.google.com/p/bridj/wiki/CreditsAndLicense"
+        }
+      ],
+      "native_libraries": [
+        "org/bridj/lib/darwin_universal/libbridj.dylib",
+        "org/bridj/lib/linux_armhf/libbridj.so",
+        "org/bridj/lib/linux_x64/libbridj.so",
+        "org/bridj/lib/linux_x86/libbridj.so",
+        "org/bridj/lib/sunos_x64/libbridj.so",
+        "org/bridj/lib/sunos_x86/libbridj.so",
+        "org/bridj/lib/win32/bridj.dll",
+        "org/bridj/lib/win64/bridj.dll"
+      ]
+    },
+    {
+      "path": "jars/caffeine-2.9.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/caffeine-2.9.3.jar-20230710192037",
+      "sha256": "1e0a7bbef1dd791653143f3f05d0e489934bf5481e58a87c9e619cd46b68729b",
+      "version": "2.9.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "META-INF/LICENSE"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/github/ben-manes/caffeine/caffeine/2.9.3/caffeine-2.9.3.pom",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/classgraph-4.8.181.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/classgraph-4.8.181.jar-20251117125415",
+      "sha256": "62a6436d69710ef5fab6ec243781ce4c5b299047ed1841b5f92746ae852ce545",
+      "version": "4.8.181",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "LICENSE-ClassGraph.txt"
+      ],
+      "license_metadata": "META-INF/maven/io.github.classgraph/classgraph/pom.xml",
+      "licenses": [
+        {
+          "name": "The MIT License (MIT)",
+          "url": "http://opensource.org/licenses/MIT"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/clij-clearcl-2.5.0.1.jar",
+      "url": "https://sites.imagej.net/clij/jars/clij-clearcl-2.5.0.1.jar-20210613085830",
+      "sha256": "ddd38510d0a51b4522549f7dbfc31bec727e3dfb0994672152d319ae9e7e527b",
+      "version": "2.5.0.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.haesleinhuepf/clij-clearcl/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/clij-core-1.8.1.1.jar",
+      "url": "https://sites.imagej.net/clij/jars/clij-core-1.8.1.1.jar-20210725142738",
+      "sha256": "488cdf19bb5b0f94388335a8be9c8e5118af9a1b9c432d6291d3685432043e93",
+      "version": "1.8.1.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.haesleinhuepf/clij-core/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/clij-coremem-2.3.0.4.jar",
+      "url": "https://sites.imagej.net/clij/jars/clij-coremem-2.3.0.4.jar-20210506170808",
+      "sha256": "307975b65c2ff68ba0d5b8d3be45b16998616d0bf352384d78432c63ba46c5d2",
+      "version": "2.3.0.4",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.haesleinhuepf/clij-coremem/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/clij2-fft_-2.2.0.22.jar",
+      "url": "https://sites.imagej.net/clijx-deconvolution/plugins/clij2-fft_-2.2.0.22.jar-20251218161549",
+      "sha256": "ffababec503e6f5a8ae209156e115dff3e41604ea7eb0a991a5c0abff7ee1f01",
+      "version": "2.2.0.22",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.haesleinhuepf/clij2-fft_/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": [
+        "net/haesleinhuepf/clijx/plugins/windows-x86_64/clFFT.dll",
+        "net/haesleinhuepf/clijx/plugins/windows-x86_64/jniclij2fftWrapper.dll",
+        "net/haesleinhuepf/clijx/plugins/windows-x86_64/clij2fft.dll",
+        "net/haesleinhuepf/clijx/plugins/windows-x86_64/StatTimer.dll",
+        "net/haesleinhuepf/clijx/plugins/macosx-x86_64/libjniclij2fftWrapper.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-x86_64/libclFFT.2.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-x86_64/libclij2fft.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-x86_64/libclFFT.2.14.0.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-x86_64/libclFFT.dylib",
+        "net/haesleinhuepf/clijx/plugins/linux-x86_64/libjniclij2fftWrapper.so",
+        "net/haesleinhuepf/clijx/plugins/linux-x86_64/libclij2fft.so",
+        "net/haesleinhuepf/clijx/plugins/linux-x86_64/libclFFT.so",
+        "net/haesleinhuepf/clijx/plugins/macosx-arm64/libjniclij2fftWrapper.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-arm64/libclFFT.2.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-arm64/libclij2fft.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-arm64/libclFFT.2.14.0.dylib",
+        "net/haesleinhuepf/clijx/plugins/macosx-arm64/libclFFT.dylib"
+      ],
+      "bundled_native_licenses": [
+        {
+          "name": "clFFT: Apache License, Version 2.0",
+          "url": "https://github.com/clMathLibraries/clFFT/blob/master/LICENSE"
+        }
+      ]
+    },
+    {
+      "path": "jars/clij2_-2.5.3.5.jar",
+      "url": "https://sites.imagej.net/clij2/plugins/clij2_-2.5.3.5.jar-20240704214737",
+      "sha256": "e62351f3be262abfd77f68b7629b553b5d184006c7a16aaa2f66b3954cca7b0a",
+      "version": "2.5.3.5",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.haesleinhuepf/clij2_/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/clij_-1.9.0.1.jar",
+      "url": "https://sites.imagej.net/clij/plugins/clij_-1.9.0.1.jar-20210613085830",
+      "sha256": "8212a1bbbc4f199fd17615f351b7baa92fa54a841283d6f8b3c67743fbab4cb4",
+      "version": "1.9.0.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.haesleinhuepf/clij_/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/commons-io-2.20.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/commons-io-2.20.0.jar-20260716221137",
+      "sha256": "df90bba0fe3cb586b7f164e78fe8f8f4da3f2dd5c27fa645f888100ccc25dd72",
+      "version": "2.20.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "META-INF/LICENSE.txt",
+        "META-INF/NOTICE.txt"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/apache/apache/35/apache-35.pom",
+      "licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/commons-math3-3.6.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/commons-math3-3.6.1.jar-20160826045005",
+      "sha256": "1e56d7b058d28b65abd256b8458e3885b674c1d588fa43cd7d1cbb9c7ef2b308",
+      "version": "3.6.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "META-INF/LICENSE.txt",
+        "META-INF/NOTICE.txt"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/apache/apache/16/apache-16.pom",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/ejml-core-0.41.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/ejml-core-0.41.jar-20250122172943",
+      "sha256": "8d36469e8414d79c875defc0af3b980525d384761c9471d15a4f365b936dd1d5",
+      "version": "0.41",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/ejml/ejml-core/0.41/ejml-core-0.41.pom",
+      "licenses": [
+        {
+          "name": "The Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/ejml-ddense-0.41.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/ejml-ddense-0.41.jar-20250122172943",
+      "sha256": "355347e9cac7e96d5d724d331a9b04bb14a8a02e1d111f1ac51c79f25d937123",
+      "version": "0.41",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/ejml/ejml-ddense/0.41/ejml-ddense-0.41.pom",
+      "licenses": [
+        {
+          "name": "The Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/fiji-lib-2.1.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/fiji-lib-2.1.3.jar-20210915210749",
+      "sha256": "35eeb0174b29db972b826c82e93482a88ea13f0a931597ab1ddc7222b36707c3",
+      "version": "2.1.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/sc.fiji/fiji-lib/pom.xml",
+      "licenses": [
+        {
+          "name": "GNU General Public License v3+",
+          "url": "https://www.gnu.org/licenses/gpl-3.0.html"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/ij-1.54p.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/ij-1.54p.jar-20250219110715",
+      "sha256": "2e1a09961dfb41cee66ddc821b2577a41a072566ce45a49bae69267099741e20",
+      "version": "1.54p",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imagej/ij/pom.xml",
+      "licenses": [
+        {
+          "name": "Public domain",
+          "url": "https://imagej.net/ij/disclaimer.html"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/ij1-patcher-2.0.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/ij1-patcher-2.0.0.jar-20260423023147",
+      "sha256": "b68810263f9521ddb34bac272816613ebb71607775c1fc337079a0476c2b581a",
+      "version": "2.0.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imagej/ij1-patcher/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imagej-common-2.1.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imagej-common-2.1.1.jar-20250122172943",
+      "sha256": "aa0292e424d960378525837f7c4f30ed8adc6528655eafb87c6f2a8a995cc426",
+      "version": "2.1.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imagej/imagej-common/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imagej-mesh-0.8.2.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imagej-mesh-0.8.2.jar-20250122172943",
+      "sha256": "e13327c7c64310ce01fee612ffe1ae144e10729adcce570614aff67b124f2f8e",
+      "version": "0.8.2",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imagej/imagej-mesh/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imagej-ops-2.2.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imagej-ops-2.2.0.jar-20250122172943",
+      "sha256": "3f98a7a7defc127715829936bcf3fc898ddc68530795588cfe360546991e5b13",
+      "version": "2.2.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imagej/imagej-ops/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imglib2-8.0.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imglib2-8.0.0.jar-20260716221137",
+      "sha256": "e48e487a307f4ca798d33ef6f413bafd2fb2357147e88d39c9ad4cda79e84f80",
+      "version": "8.0.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imglib2/imglib2/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imglib2-algorithm-0.18.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imglib2-algorithm-0.18.3.jar-20260716221137",
+      "sha256": "ecfcd3fed8ba8783995378491c2bebb58288e86c87d8c91e3c1ed8956a0351fa",
+      "version": "0.18.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imglib2/imglib2-algorithm/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imglib2-algorithm-fft-0.2.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imglib2-algorithm-fft-0.2.1.jar-20220912165414",
+      "sha256": "42aa56c680d9f579b781dbba4a9175118ca255cf7abf558acf74c6366f22d672",
+      "version": "0.2.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imglib2/imglib2-algorithm-fft/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imglib2-cache-1.0.0-beta-20.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imglib2-cache-1.0.0-beta-20.jar-20260716221137",
+      "sha256": "81e27d849b77690bf7a0394c70c38f1aa0cea02ff8b89672d1cafc4dfa1c6487",
+      "version": "1.0.0-beta-20",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imglib2/imglib2-cache/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imglib2-ij-2.0.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imglib2-ij-2.0.3.jar-20250122172943",
+      "sha256": "80ba903bbc58ce6a428fc96f0146276483266be465fe33d4550fc093b4db684f",
+      "version": "2.0.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imglib2/imglib2-ij/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imglib2-realtransform-4.0.5.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imglib2-realtransform-4.0.5.jar-20260716221137",
+      "sha256": "c0395feade4e05f69f4dfca97b4671a48cff8993bd657680dca8cd71cf6fc1ad",
+      "version": "4.0.5",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imglib2/imglib2-realtransform/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/imglib2-roi-0.15.2.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/imglib2-roi-0.15.2.jar-20260216133515",
+      "sha256": "3cccfa047c049eeb7170ef621926b320b1f57208a586cb3f9867d30ac05ef81f",
+      "version": "0.15.2",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/net.imglib2/imglib2-roi/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/jakarta.xml.bind-api-2.3.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/jakarta.xml.bind-api-2.3.3.jar-20220912165414",
+      "sha256": "c04539f472e9a6dd0c7685ea82d677282269ab8e7baca2e14500e381e0c6cec5",
+      "version": "2.3.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "META-INF/LICENSE.md",
+        "META-INF/NOTICE.md"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/jakarta/xml/bind/jakarta.xml.bind-api-parent/2.3.3/jakarta.xml.bind-api-parent-2.3.3.pom",
+      "licenses": [
+        {
+          "name": "Eclipse Distribution License - v 1.0",
+          "url": "http://www.eclipse.org/org/documents/edl-v10.php"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/jama-1.0.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/jama-1.0.3.jar-20140217152409",
+      "sha256": "c7325ee29be1aac1287ddac690f73671f1cd911ca9eca7c619990e86310556fd",
+      "version": "1.0.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/gov/nist/math/jama/1.0.3/jama-1.0.3.pom",
+      "licenses": [
+        {
+          "name": "Public Domain",
+          "url": "http://creativecommons.org/licenses/publicdomain/"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/javacl-1.0.0-RC4.jar",
+      "url": "https://sites.imagej.net/clij/jars/javacl-1.0.0-RC4.jar-20181201213040",
+      "sha256": "6d356f3d489e686c4378d97d559ed30acca312bfe3bfb4c3119b72c7e5fa665f",
+      "version": "1.0.0-RC4",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/nativelibs4java/nativelibs4java-parent/1.9/nativelibs4java-parent-1.9.pom",
+      "licenses": [
+        {
+          "name": "New BSD License (GPL-compatible)",
+          "url": "http://code.google.com/p/bridj/wiki/CreditsAndLicense"
+        }
+      ],
+      "native_libraries": [
+        "org/bridj/lib/darwin_universal/libbridj.dylib",
+        "org/bridj/lib/linux_x64/libbridj.so",
+        "org/bridj/lib/linux_x86/libbridj.so",
+        "org/bridj/lib/sunos_x86/libbridj.so",
+        "org/bridj/lib/win32/bridj.dll",
+        "org/bridj/lib/win64/bridj.dll"
+      ]
+    },
+    {
+      "path": "jars/javacpp-1.5.10.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/javacpp-1.5.10.jar-20250122172943",
+      "sha256": "7783dd969b51d9bbec02d1711ad5830785da88aad61f18eda93b7937d949dff1",
+      "version": "1.5.10",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.bytedeco/javacpp/pom.xml",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0"
+        },
+        {
+          "name": "GNU General Public License (GPL) version 2, or any later version",
+          "url": "http://www.gnu.org/licenses/"
+        },
+        {
+          "name": "GPLv2 with Classpath exception",
+          "url": "http://www.gnu.org/software/classpath/license.html"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/javassist-3.30.2-GA.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/javassist-3.30.2-GA.jar-20250122172943",
+      "sha256": "eba37290994b5e4868f3af98ff113f6244a6b099385d9ad46881307d3cb01aaf",
+      "version": "3.30.2-GA",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.javassist/javassist/pom.xml",
+      "licenses": [
+        {
+          "name": "MPL 1.1",
+          "url": "https://www.mozilla.org/en-US/MPL/1.1/"
+        },
+        {
+          "name": "LGPL 2.1",
+          "url": "https://www.gnu.org/licenses/lgpl-2.1.html"
+        },
+        {
+          "name": "Apache License 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/jitk-tps-3.0.4.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/jitk-tps-3.0.4.jar-20250122172943",
+      "sha256": "929058aaf12151f563a25470f1bb218c736ee994ec676bb298746e10b91b3930",
+      "version": "3.0.4",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/jitk/jitk-tps/pom.xml",
+      "licenses": [
+        {
+          "name": "Apache Software License, Version 2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/jna-5.14.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/jna-5.14.0.jar-20250122172943",
+      "sha256": "34ed1e1f27fa896bca50dbc4e99cf3732967cec387a7a0d5e3486c09673fe8c6",
+      "version": "5.14.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "META-INF/LICENSE"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.14.0/jna-5.14.0.pom",
+      "licenses": [
+        {
+          "name": "LGPL-2.1-or-later",
+          "url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1"
+        },
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": [
+        "com/sun/jna/win32-x86/jnidispatch.dll",
+        "com/sun/jna/linux-x86/libjnidispatch.so",
+        "com/sun/jna/linux-x86-64/libjnidispatch.so",
+        "com/sun/jna/linux-arm/libjnidispatch.so",
+        "com/sun/jna/linux-armel/libjnidispatch.so",
+        "com/sun/jna/linux-aarch64/libjnidispatch.so",
+        "com/sun/jna/linux-ppc/libjnidispatch.so",
+        "com/sun/jna/linux-ppc64le/libjnidispatch.so",
+        "com/sun/jna/linux-mips64el/libjnidispatch.so",
+        "com/sun/jna/linux-loongarch64/libjnidispatch.so",
+        "com/sun/jna/linux-s390x/libjnidispatch.so",
+        "com/sun/jna/linux-riscv64/libjnidispatch.so",
+        "com/sun/jna/sunos-x86/libjnidispatch.so",
+        "com/sun/jna/sunos-x86-64/libjnidispatch.so",
+        "com/sun/jna/sunos-sparc/libjnidispatch.so",
+        "com/sun/jna/sunos-sparcv9/libjnidispatch.so",
+        "com/sun/jna/freebsd-x86/libjnidispatch.so",
+        "com/sun/jna/freebsd-x86-64/libjnidispatch.so",
+        "com/sun/jna/openbsd-x86/libjnidispatch.so",
+        "com/sun/jna/openbsd-x86-64/libjnidispatch.so",
+        "com/sun/jna/win32-x86-64/jnidispatch.dll",
+        "com/sun/jna/win32-aarch64/jnidispatch.dll"
+      ]
+    },
+    {
+      "path": "jars/jocl-2.0.5.jar",
+      "url": "https://sites.imagej.net/clij/jars/jocl-2.0.5.jar-20250801124700",
+      "sha256": "88e425bda01a3edb15777f7831eaa364bde3d19c6a833b51a018a5ffac3ad667",
+      "version": "2.0.5",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.jocl/jocl/pom.xml",
+      "licenses": [
+        {
+          "name": "MIT",
+          "url": "http://jocl.org/downloads/LICENSE.TXT"
+        }
+      ],
+      "native_libraries": [
+        "lib/JOCL_2_0_5-windows-x86_64.dll",
+        "lib/libJOCL_2_0_5-apple-arm64.dylib",
+        "lib/libJOCL_2_0_5-apple-x86_64.dylib",
+        "lib/libJOCL_2_0_5-linux-arm64.so",
+        "lib/libJOCL_2_0_5-linux-x86_64.so"
+      ]
+    },
+    {
+      "path": "jars/joml-1.10.8.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/joml-1.10.8.jar-20250122172943",
+      "sha256": "bf19510145178df82cd3bd37edd514c13f411531ec5545299fd3abcbc98fe7c2",
+      "version": "1.10.8",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/joml/joml/1.10.8/joml-1.10.8.pom",
+      "licenses": [
+        {
+          "name": "MIT License",
+          "url": "https://www.opensource.org/licenses/mit-license.php"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/jython-standalone-2.7.4.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/python/jython-standalone/2.7.4/jython-standalone-2.7.4.jar",
+      "sha256": "1fba1769effcc8b19f5e10436bc8274a158ce988559f257927c24c73bb137f3c",
+      "version": "2.7.4",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "LICENSE",
+        "META-INF/LICENSE",
+        "META-INF/LICENSE.txt",
+        "META-INF/NOTICE",
+        "META-INF/NOTICE.txt"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/python/jython-standalone/2.7.4/jython-standalone-2.7.4.pom",
+      "licenses": [
+        {
+          "name": "Jython Software License",
+          "url": "https://raw.githubusercontent.com/jython/jython/v2.7.4/LICENSE.txt"
+        }
+      ],
+      "native_libraries": [
+        "META-INF/native/linux32/libjansi.so",
+        "META-INF/native/linux64/libjansi.so",
+        "META-INF/native/windows32/jansi.dll",
+        "META-INF/native/windows64/jansi.dll",
+        "jni/aarch64-Linux/libjffi-1.2.so",
+        "jni/arm-Linux/libjffi-1.2.so",
+        "jni/i386-Linux/libjffi-1.2.so",
+        "jni/i386-SunOS/libjffi-1.2.so",
+        "jni/i386-Windows/jffi-1.2.dll",
+        "jni/ppc64-Linux/libjffi-1.2.so",
+        "jni/ppc64le-Linux/libjffi-1.2.so",
+        "jni/s390x-Linux/libjffi-1.2.so",
+        "jni/sparcv9-SunOS/libjffi-1.2.so",
+        "jni/x86_64-FreeBSD/libjffi-1.2.so",
+        "jni/x86_64-Linux/libjffi-1.2.so",
+        "jni/x86_64-OpenBSD/libjffi-1.2.so",
+        "jni/x86_64-SunOS/libjffi-1.2.so",
+        "jni/x86_64-Windows/jffi-1.2.dll"
+      ]
+    },
+    {
+      "path": "jars/kotlin-stdlib-1.9.22.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/kotlin-stdlib-1.9.22.jar-20250122172943",
+      "sha256": "6abe146c27864138b874ccccfe5f534e3eb923c99a1b7b5d45494ee5694f3e0a",
+      "version": "1.9.22",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/1.9.22/kotlin-stdlib-1.9.22.pom",
+      "licenses": [
+        {
+          "name": "The Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/miglayout-core-5.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/miglayout-core-5.3.jar-20230710192037",
+      "sha256": "cf3cb12d94b76c2f80c113977d0372d037784002943e566fcdac6b92d076935e",
+      "version": "5.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-parent/5.3/miglayout-parent-5.3.pom",
+      "licenses": [
+        {
+          "name": "BSD",
+          "url": "http://www.debian.org/misc/bsd.license"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/miglayout-swing-5.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/miglayout-swing-5.3.jar-20230710192037",
+      "sha256": "ae384b680242234170de6b939bebf56effa40dd483477e13cd898104ba1e1de1",
+      "version": "5.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-parent/5.3/miglayout-parent-5.3.pom",
+      "licenses": [
+        {
+          "name": "BSD",
+          "url": "http://www.debian.org/misc/bsd.license"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/mines-jtk-20151125.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/mines-jtk-20151125.jar-20151221220139",
+      "sha256": "21c7c16001b2360d42b8332775a5b621b8c66cafbc30f93a988864da8f059841",
+      "version": "20151125",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "https://github.com/dhale/jtk/blob/master/license.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/mpicbg-1.6.6.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/mpicbg-1.6.6.jar-20260716221137",
+      "sha256": "43605b945958c6e675f3b0ec2090fd3f4e328ba6fffef9aacfc96fc1ebfee3d8",
+      "version": "1.6.6",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "LICENSE"
+      ],
+      "license_metadata": "META-INF/maven/mpicbg/mpicbg/pom.xml",
+      "licenses": [
+        {
+          "name": "GNU General Public License v2+",
+          "url": "https://www.gnu.org/licenses/old-licenses/gpl-2.0.html"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/nativelibs4java-utils-1.6.jar",
+      "url": "https://sites.imagej.net/clij/jars/nativelibs4java-utils-1.6.jar-20181201213239",
+      "sha256": "2db83e3f3f5ca82d772a4c6dddc45a69e1f858440142f13d990401d7ab91a46d",
+      "version": "1.6",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/nativelibs4java/nativelibs4java-parent/1.9/nativelibs4java-parent-1.9.pom",
+      "licenses": [
+        {
+          "name": "New BSD License (GPL-compatible)",
+          "url": "http://code.google.com/p/bridj/wiki/CreditsAndLicense"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/ojalgo-45.1.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/ojalgo-45.1.1.jar-20180706220210",
+      "sha256": "c7f075bae9585283eb6408cfc9fe724edc8013d28772b803dbd7a5a3488665f8",
+      "version": "45.1.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.ojalgo/ojalgo/pom.xml",
+      "licenses": [
+        {
+          "name": "MIT",
+          "url": "http://ojalgo.org/license.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/opencl4java-1.0.0-RC4.jar",
+      "url": "https://sites.imagej.net/clij/jars/opencl4java-1.0.0-RC4.jar-20181201213239",
+      "sha256": "87b65f3815f7b9014e4c1d0d70a9f41e5c3be51351536d9ec3bfdd0c2a760303",
+      "version": "1.0.0-RC4",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/nativelibs4java/nativelibs4java-parent/1.9/nativelibs4java-parent-1.9.pom",
+      "licenses": [
+        {
+          "name": "New BSD License (GPL-compatible)",
+          "url": "http://code.google.com/p/bridj/wiki/CreditsAndLicense"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/parsington-3.1.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/parsington-3.1.0.jar-20230710192037",
+      "sha256": "7943c91a1e62918ea47d0a08f6b5989a8b388e019216441002236528f769c72a",
+      "version": "3.1.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.scijava/parsington/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/prettytime-4.0.1.Final.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/prettytime-4.0.1.Final.jar-20180526000053",
+      "sha256": "ef7098d973ae78b57d1a22dc37d3b8a771bf030301300e24055d676b6cdc5e75",
+      "version": "4.0.1.Final",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/ocpsoft/prettytime/prettytime-parent/4.0.1.Final/prettytime-parent-4.0.1.Final.pom",
+      "licenses": [
+        {
+          "name": "Apache License",
+          "url": "http://www.apache.org/licenses/"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/rsyntaxtextarea-3.6.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/rsyntaxtextarea-3.6.0.jar-20260716221137",
+      "sha256": "bf00ec1015798edd433c3dfadf0c34a12a395b8c010f8f9fd8ec6ff4f44eb94c",
+      "version": "3.6.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "META-INF/LICENSE"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/com/fifesoft/rsyntaxtextarea/3.6.0/rsyntaxtextarea-3.6.0.pom",
+      "licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://github.com/bobbylight/RSyntaxTextArea/tree/master/RSyntaxTextArea/src/main/resources/META-INF/LICENSE"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scifio-0.49.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scifio-0.49.0.jar-20260423023147",
+      "sha256": "057e7e5233e472168ed3e21c29b27e7b1e40ece28becc81b1baa5f2c7e628e58",
+      "version": "0.49.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/io.scif/scifio/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scifio-jai-imageio-1.1.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scifio-jai-imageio-1.1.1.jar-20210915210749",
+      "sha256": "c7f7e4f714bfdc362112e0e457807fb06e5cf0d58c1af31ea12a5b0c95f89f19",
+      "version": "1.1.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/io.scif/scifio-jai-imageio/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scijava-common-2.100.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scijava-common-2.100.1.jar-20260716221137",
+      "sha256": "af53bb31087dd46bfe15645c8b7cc69fe837795516816c60f5be78b9ff0ce6a3",
+      "version": "2.100.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.scijava/scijava-common/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scijava-desktop-1.0.0.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scijava-desktop-1.0.0.jar-20260423023147",
+      "sha256": "bbcd46627a71e182f48ef47d2856deac62102262983b8f40f16627517bf4c20e",
+      "version": "1.0.0",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.scijava/scijava-desktop/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scijava-optional-1.0.2.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scijava-optional-1.0.2.jar-20260716221137",
+      "sha256": "9f41b9bd4410b593177aa541a710f867118f0817038022c374b5774a779d19b7",
+      "version": "1.0.2",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.scijava/scijava-optional/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scijava-search-3.0.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scijava-search-3.0.1.jar-20260716221137",
+      "sha256": "73d5e060f57e5856de77598f41052100477ef1b7b51c829c221f81481cbda8d3",
+      "version": "3.0.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.scijava/scijava-search/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scijava-table-1.0.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scijava-table-1.0.3.jar-20260716221137",
+      "sha256": "b18f303bf087f3bdd8cb0a7311105798249e826b15cbdb94c24a6d861d72fbe3",
+      "version": "1.0.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.scijava/scijava-table/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/scripting-jython-1.0.1.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/scripting-jython-1.0.1.jar-20230710192336",
+      "sha256": "2c61cfdcc3aa10bdc71a9ac7d82da14928d126a8f8b48390e41e642e6aa7deb5",
+      "version": "1.0.1",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/org.scijava/scripting-jython/pom.xml",
+      "licenses": [
+        {
+          "name": "Simplified BSD License",
+          "url": null
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/slf4j-api-2.0.17.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/slf4j-api-2.0.17.jar-20260216133515",
+      "sha256": "7b751d952061954d5abfed7181c1f645d336091b679891591d63329c622eb832",
+      "version": "2.0.17",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [
+        "META-INF/LICENSE.txt"
+      ],
+      "license_metadata": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-bom/2.0.17/slf4j-bom-2.0.17.pom",
+      "licenses": [
+        {
+          "name": "MIT",
+          "url": "https://opensource.org/license/mit"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/trove4j-3.0.3.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/trove4j-3.0.3.jar-20150318201525",
+      "sha256": "3c8616203d61a12a7e3487e8b34f3c198c2b5ba9e90da0c7ea32d99cd4958012",
+      "version": "3.0.3",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/net/sf/trove4j/trove4j/3.0.3/trove4j-3.0.3.pom",
+      "licenses": [
+        {
+          "name": "GNU Lesser General Public License 2.1",
+          "url": "http://www.gnu.org/licenses/lgpl-2.1.txt"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/udunits-4.3.18.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/udunits-4.3.18.jar-20131018164809",
+      "sha256": "e392cd6b1829b5726da183f4060b54931bd384ce02ada37517c8b740fa4c41df",
+      "version": "4.3.18",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "META-INF/maven/edu.ucar/udunits/pom.xml",
+      "licenses": [
+        {
+          "name": "UCAR/Unidata netCDF license (MIT-style)",
+          "url": "https://docs.unidata.ucar.edu/netcdf-java/4.6/userguide/index.html"
+        }
+      ],
+      "native_libraries": []
+    },
+    {
+      "path": "jars/xpp3-1.1.4c.jar",
+      "url": "https://sites.imagej.net/Fiji/jars/xpp3-1.1.4c.jar-20200731193402",
+      "sha256": "0341395a481bb887803957145a6a37879853dd625e9244c2ea2509d9bb7531b9",
+      "version": "1.1.4c",
+      "platforms": [
+        "macos-arm64",
+        "macos-x86_64",
+        "windows-x86_64"
+      ],
+      "license_files": [],
+      "license_metadata": "https://repo.maven.apache.org/maven2/xpp3/xpp3/1.1.4c/xpp3-1.1.4c.pom",
+      "licenses": [
+        {
+          "name": "Indiana University Extreme! Lab Software License, vesion 1.1.1",
+          "url": "http://www.extreme.indiana.edu/viewcvs/~checkout~/XPP3/java/LICENSE.txt"
+        },
+        {
+          "name": "Public Domain",
+          "url": "http://creativecommons.org/licenses/publicdomain"
+        },
+        {
+          "name": "Apache Software License, version 1.1",
+          "url": "http://www.apache.org/licenses/LICENSE-1.1"
+        }
+      ],
+      "native_libraries": []
+    }
+  ],
+  "minimum_macos": {
+    "arm64": "14.0",
+    "x86_64": "13.0"
+  }
+}

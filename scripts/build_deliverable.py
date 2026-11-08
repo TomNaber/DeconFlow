@@ -13,6 +13,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app_version import __version__
+from scripts.setup_imagej import install as install_imagej
+from source.imagej_runtime import manifest as imagej_manifest, java_executable
 
 
 def main():
@@ -27,7 +29,7 @@ def main():
     arch = {'amd64': 'x86_64', 'x86_64': 'x86_64', 'arm64': 'arm64'}.get(machine)
     if arch is None or (args.platform == 'windows' and arch != 'x86_64'):
         parser.error(f'Unsupported architecture: {machine}')
-    prefix = Path(sys.prefix)
+    prefix = Path(sys.prefix).resolve()
     if sys.version_info[:2] != (3, 13) or not (prefix / 'conda-meta').is_dir():
         parser.error('Activate the Python 3.13 environment created from environment.yml first.')
     try:
@@ -40,12 +42,8 @@ def main():
                     'import tkinter, psfmodels, napari_vipp_imaris; '
                     'import source.preview, source.batch_deconvolve_ims; '
                     'import source.generate_gibson_lanni_psfs'], cwd=ROOT, check=True)
-    java_name = 'java.exe' if args.platform == 'windows' else 'java'
-    java_candidates = sorted(prefix.rglob(java_name))
-    java = next((p for p in java_candidates if p.parent.name == 'bin' and p.is_file()), None)
-    if java is None:
-        parser.error('OpenJDK is missing; recreate the environment from environment.yml.')
-    subprocess.run([str(java), '-version'], check=True)
+    imagej = install_imagej()  # Also installs Java into this prefix when missing.
+    java = java_executable(allow_external=False)
     java_home = java.parent.parent.relative_to(prefix)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -65,6 +63,8 @@ def main():
         shutil.copytree(ROOT / 'source', app / 'source',
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store'))
         shutil.copytree(ROOT / 'docs', app / 'docs')
+        shutil.copytree(imagej, app / 'runtime/imagej')
+        shutil.copytree(imagej.parent / 'bioformats', app / 'runtime/bioformats')
         # Preserve native dependency notices without distributing unused wheels.
         shutil.copytree(ROOT / 'vendor', app / 'vendor',
                         ignore=shutil.ignore_patterns('*.whl', '__pycache__', '*.pyc', '.DS_Store'))
@@ -91,7 +91,7 @@ def main():
                     'CFBundlePackageType': 'APPL',
                     'CFBundleShortVersionString': __version__,
                     'CFBundleVersion': __version__,
-                    'LSMinimumSystemVersion': '12.0',
+                    'LSMinimumSystemVersion': imagej_manifest()['minimum_macos'][arch],
                     'NSHighResolutionCapable': True,
                 }, stream)
         else:

@@ -17,6 +17,7 @@ def run_worker():
     sys.path.insert(0, str(ROOT / "source"))
     settings = json.load(sys.stdin)
     module = importlib.import_module(settings.pop("module"))
+    settings.pop("FIJI_EXECUTABLE", None)  # Ignore obsolete saved worker settings.
     for name, value in settings.items():
         if isinstance(getattr(module, name), Path):
             value = Path(value).expanduser()

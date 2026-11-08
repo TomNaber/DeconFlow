@@ -235,15 +235,15 @@ class Preview(ttk.Frame):
         return (self.data is not None and self.selected_path is not None
                 and self.selected_path.resolve() == Path(self.data["path"]).resolve())
 
-    def configure_fiji(self, executable, memory):
-        key = (Path(executable).expanduser().resolve(), str(memory))
+    def configure_fiji(self, memory):
+        key = str(memory)
         session = self.fiji_session
         if (session is not None and not session.closed and session.process.poll() is None
                 and not (session.directory / "failed.json").exists()
-                and (session.executable, session.memory) == key):
+                and session.memory == key):
             return session
         self.stop_fiji()
-        self.fiji_session = FijiSession(*key, log=lambda line: self.events.put(
+        self.fiji_session = FijiSession(key, log=lambda line: self.events.put(
             (None, ("session_log", line))))
         return self.fiji_session
 
@@ -332,7 +332,7 @@ class Preview(ttk.Frame):
         self.request_started = perf_counter()
         try:
             self.job_directory = TemporaryDirectory(prefix="preview-")
-            session = self.configure_fiji(settings["FIJI_EXECUTABLE"], settings["FIJI_MEMORY"])
+            session = self.configure_fiji(settings["FIJI_MEMORY"])
             settings["FIJI_SESSION"] = str(session.directory)
             self.connection.send((revision, settings, self.job_directory.name))
             self.running = (revision, settings)
@@ -409,7 +409,7 @@ class Preview(ttk.Frame):
             while True:
                 generation, (kind, value) = self.events.get_nowait()
                 if kind == "session_log":
-                    if not (self.initializing and value.startswith("Fiji ready")):
+                    if not (self.initializing and value.startswith("ImageJ ready")):
                         self.on_log(value)
                     continue
                 if generation != self.generation:

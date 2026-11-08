@@ -1,40 +1,12 @@
-"""Platform-specific Fiji discovery, file locks, and owned process cleanup."""
+"""Platform-specific file locks, and owned process cleanup."""
 
 from contextlib import contextmanager
 import errno
 import os
 from pathlib import Path
-import platform
-import shutil
 import signal
 import subprocess
 from time import monotonic, sleep
-
-
-def default_fiji_executable():
-    """Find a native Fiji launcher; an empty result leaves selection to the user."""
-    if platform.system() == "Darwin":
-        launcher = "fiji-macos-arm64" if platform.machine() == "arm64" else "fiji-macos-x64"
-        candidates = [root / "Contents/MacOS" / name
-                      for root in (Path("/Applications/Fiji/Fiji.app"),
-                                   Path("/Applications/Fiji.app"), Path.home() / "Applications/Fiji.app")
-                      for name in (launcher, "ImageJ-macosx")]
-    elif os.name == "nt":
-        roots = [Path.home() / "Fiji", Path.home() / "Fiji.app",
-                 Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Fiji",
-                 Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Fiji"]
-        candidates = [root / name for root in roots
-                      for name in ("fiji-windows-x64.exe", "ImageJ-win64.exe")]
-    else:
-        candidates = []
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    for name in (("fiji-windows-x64.exe", "ImageJ-win64.exe") if os.name == "nt" else ("fiji",)):
-        found = shutil.which(name)
-        if found:
-            return found
-    return ""
 
 
 def process_session_options():
@@ -62,7 +34,7 @@ def stop_process_tree(pid, *, force=False):
 
 @contextmanager
 def exclusive_file_lock(path, timeout, check):
-    """Serialize Fiji clients across processes, releasing the lock on exit/crash."""
+    """Serialize ImageJ clients across processes, releasing the lock on exit/crash."""
     if os.name == "nt":
         import msvcrt
     else:
@@ -85,7 +57,7 @@ def exclusive_file_lock(path, timeout, check):
                 if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                     raise
                 if monotonic() >= deadline:
-                    raise TimeoutError("Timed out waiting for the Fiji GPU queue.") from error
+                    raise TimeoutError("Timed out waiting for the application file lock.") from error
                 sleep(0.025)
         try:
             yield

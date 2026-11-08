@@ -13,6 +13,8 @@ try {
                 Expand-Archive -LiteralPath "$PSScriptRoot\runtime.zip" -DestinationPath $runtime -Force
                 & "$runtime\python.exe" "$runtime\Scripts\conda-unpack-script.py"
                 if ($LASTEXITCODE -ne 0) { throw 'Runtime setup failed.' }
+                & "$runtime\@JAVA_HOME@\bin\java.exe" -version
+                if ($LASTEXITCODE -ne 0) { throw 'Bundled Java setup failed.' }
                 New-Item -ItemType File "$runtime\.ready" | Out-Null
             }
         } finally { $lock.Dispose() }

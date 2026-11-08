@@ -22,7 +22,7 @@ from app_version import __version__
 from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST, contrast_maximum
 from source.channel_metadata import read_channels, text
 from source.edit_ims_channels import NAMED_COLORS
-from source.platform_support import default_fiji_executable, process_session_options, stop_process_tree
+from source.platform_support import process_session_options, stop_process_tree
 from source.preview import Preview
 from source.psf_channels import read_psf_channels
 from source.psf_session import PSFSession, memory_argument, memory_gb
@@ -160,8 +160,7 @@ class Application:
         ttk.Label(self.setup,textvariable=self.stack_status).grid(row=1,column=0,columnspan=2,sticky='w')
         self.field(self.setup,'Deconvolution',2,'OUTPUT_DIR','Output folder',WORKSPACE/'dcv',str,'directory')
         self.field(self.setup,'Deconvolution',3,'OVERWRITE','Overwrite existing output',False,bool)
-        self.field(self.setup,'Deconvolution',4,'FIJI_EXECUTABLE','FIJI executable',default_fiji_executable(),str,'file')
-        self.field(self.setup,'Deconvolution',5,'FIJI_MEMORY','FIJI max memory (GB)',12,float)
+        self.field(self.setup,'Deconvolution',4,'FIJI_MEMORY','ImageJ max memory (GB)',12,float)
         self.psf_setup = self.group('PSF setup')
         radios = ttk.Frame(self.psf_setup)
         radios.pack(fill='x')
@@ -812,7 +811,7 @@ class Application:
         return result
 
     def deconvolution_settings(self,indices,batch=False,catalog=None,require_psfs=True):
-        names = list(self.fields['Deconvolution']) if batch else ['FIJI_EXECUTABLE','FIJI_MEMORY','RLTV_NON_CIRCULANT']
+        names = list(self.fields['Deconvolution']) if batch else ['FIJI_MEMORY','RLTV_NON_CIRCULANT']
         settings = {name:self.read_field('Deconvolution',name) for name in names}
         settings['FIJI_MEMORY'] = memory_argument(settings['FIJI_MEMORY'])
         if not indices:

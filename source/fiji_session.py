@@ -1,4 +1,4 @@
-"""Owned headless Fiji process and a small, file-based request protocol."""
+"""Owned headless ImageJ process and a small, file-based request protocol."""
 import atexit
 from collections import deque
 from contextlib import contextmanager
@@ -13,8 +13,10 @@ from time import monotonic, sleep
 import uuid
 
 if __package__:
+    from .imagej_runtime import launch_command, java_environment, runtime_info
     from .platform_support import exclusive_file_lock, process_session_options, stop_process_tree
 else:
+    from imagej_runtime import launch_command, java_environment, runtime_info
     from platform_support import exclusive_file_lock, process_session_options, stop_process_tree
 
 SOURCE = Path(__file__).resolve().parent
@@ -35,32 +37,25 @@ def console_log(value):
 
 class FijiSession:
     """The owner manages lifetime; clients receive only the directory path."""
-    def __init__(self, executable, memory, log=console_log):
-        self.executable = Path(executable).expanduser().resolve()
+    def __init__(self, memory, log=console_log):
         self.memory = str(memory)
         self.log = log
         self.process = None
         self.closed = False
         self.diagnostics = deque(maxlen=100)
         self._lock = threading.Lock()
-        if not self.executable.is_file() or not os.access(self.executable, os.X_OK):
-            raise FileNotFoundError(f'No Fiji detected at path: {self.executable}')
+        self.runtime = runtime_info()
         self._temporary = TemporaryDirectory(prefix='fiji-session-')
         self.directory = Path(self._temporary.name)
         atomic_json(self.directory / 'owner.json', {'pid': os.getpid()})
         (self.directory / 'lib').mkdir()
         shutil.copyfile(SOURCE / 'lib/totalvariationterm.cl', self.directory / 'lib/totalvariationterm.cl')
-        self.log('Initializing Fiji.\n')
-        environment = os.environ.copy()
-        for name in ('JAVA_HOME', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'CLASSPATH'):
-            environment.pop(name, None)
-        parameter = 'session_dir=' + json.dumps(str(self.directory))
+        self.log('Initializing ImageJ.\n')
         try:
             self.process = subprocess.Popen(
-                [str(self.executable), '--no-splash', '--headless', f'--mem={self.memory}',
-                 '-Dimagej.updater.disableAutocheck=true', '--', '--headless', '--run',
-                 str(SOURCE / 'fiji_session_worker.py'), parameter],
-                cwd=self.directory, env=environment, stdout=subprocess.PIPE,
+                launch_command(self.memory, SOURCE / 'fiji_session_worker.py',
+                               {'session_dir': self.directory}),
+                cwd=self.directory, env=java_environment(), stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                 **process_session_options(),
             )
@@ -79,17 +74,17 @@ class FijiSession:
         status = self.process.wait()
         with self._lock:
             if not self.closed:
-                atomic_json(self.directory / 'failed.json', {'error': f'Fiji exited with status {status}\n' + '\n'.join(self.diagnostics)})
+                atomic_json(self.directory / 'failed.json', {'error': f'ImageJ exited with status {status}\n' + '\n'.join(self.diagnostics)})
 
     def _watch_startup(self):
         started = monotonic()
         try:
             ready = FijiClient(self.directory).wait_ready()
             if not self.closed:
-                self.log(f"Fiji ready. {ready['gpu']} ({monotonic() - started:.2f} s)\n")
+                self.log(f"ImageJ ready. {ready['gpu']} ({monotonic() - started:.2f} s)\n")
         except Exception as error:
             if not self.closed:
-                self.log(f'Fiji initialization failed: {error}\n')
+                self.log(f'ImageJ initialization failed: {error}\n')
                 self.close()
 
     def close(self):
@@ -112,7 +107,7 @@ class FijiClient:
 
     def _check(self):
         if not self.directory.is_dir():
-            raise RuntimeError('Fiji session closed; initialize Fiji again.')
+            raise RuntimeError('ImageJ session closed; initialize ImageJ again.')
         failed = self.directory / 'failed.json'
         if failed.is_file():
             raise RuntimeError(json.loads(failed.read_text())['error'])
@@ -125,7 +120,7 @@ class FijiClient:
             if ready.is_file():
                 return json.loads(ready.read_text())
             if monotonic() >= deadline:
-                raise TimeoutError('Fiji initialization timed out.')
+                raise TimeoutError('ImageJ initialization timed out.')
             sleep(0.025)
 
     @contextmanager
@@ -148,13 +143,13 @@ class FijiClient:
             while not response.is_file():
                 self._check()
                 if monotonic() >= deadline:
-                    atomic_json(self.directory / 'failed.json', {'error': 'Fiji job timed out; restart Fiji.'})
-                    raise TimeoutError('Fiji job timed out; restart Fiji.')
+                    atomic_json(self.directory / 'failed.json', {'error': 'ImageJ job timed out; restart ImageJ.'})
+                    raise TimeoutError('ImageJ job timed out; restart ImageJ.')
                 sleep(0.025)
             result = json.loads(response.read_text())
             response.unlink()
             if result['id'] != request_id:
-                raise RuntimeError('Unexpected Fiji response ID.')
+                raise RuntimeError('Unexpected ImageJ response ID.')
             if 'error' in result:
                 raise RuntimeError(result['error'])
             return result['geometries']
@@ -190,18 +185,18 @@ class FijiClient:
                     progress()
                 if monotonic() >= deadline:
                     # Poison the session so another client cannot submit overlapping work.
-                    atomic_json(self.directory / 'failed.json', {'error': 'Fiji job timed out; restart Fiji.'})
-                    raise TimeoutError('Fiji job timed out; restart Fiji.')
+                    atomic_json(self.directory / 'failed.json', {'error': 'ImageJ job timed out; restart ImageJ.'})
+                    raise TimeoutError('ImageJ job timed out; restart ImageJ.')
                 sleep(0.025)
             report_geometry()
             geometry_path.unlink(missing_ok=True)
             result = json.loads(response.read_text())
             response.unlink()
             if result['id'] != request_id:
-                raise RuntimeError('Unexpected Fiji response ID.')
+                raise RuntimeError('Unexpected ImageJ response ID.')
             if 'error' in result:
                 raise RuntimeError(result['error'])
             if not Path(output_path).is_file():
-                raise RuntimeError('Fiji did not create an output TIFF.')
+                raise RuntimeError('ImageJ did not create an output TIFF.')
             result['timings']['queue_ready'] = queue_ready
             return result['timings']

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "version": "8.5.0",
+  "artifacts": [
+    {
+      "path": "jars/bioformats_package-8.5.0.jar",
+      "url": "https://downloads.openmicroscopy.org/bio-formats/8.5.0/artifacts/bioformats_package.jar",
+      "sha256": "c6e60665d53a334b66e4d635340151f403dfe57a64704c573dd4c03b873befb9",
+      "license": "GPL-2.0-or-later with third-party notices retained inside the original upstream bundle",
+      "source": "https://github.com/ome/bioformats/tree/v8.5.0"
+    }
+  ]
+}

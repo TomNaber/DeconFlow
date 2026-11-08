@@ -3,7 +3,7 @@
 #@ OpService ops
 #@ DatasetService ds
 
-# Jython 2.7: keep syntax compatible with the Fiji installation.
+# Jython 2.7: keep syntax compatible with the managed ImageJ runtime.
 import json
 import os
 import time
@@ -33,9 +33,10 @@ try:
     from net.haesleinhuepf.clijx.plugins import clij2fftWrapper
     clij2 = CLIJ2.getInstance()
     clij2.clear()
-    publish('ready.json', {'gpu': str(clij2.getGPUName())})
+    publish('ready.json', {'gpu': str(clij2.getGPUName()), 'java_version': str(System.getProperty('java.version')),
+                           'java_vendor': str(System.getProperty('java.vendor'))})
 except:
-    publish('failed.json', {'error': traceback.format_exc()})
+    publish('failed.json', {'error': 'ImageJ GPU initialization failed. Check the OpenCL driver and app runtime.\n' + traceback.format_exc()})
     System.exit(1)
 
 

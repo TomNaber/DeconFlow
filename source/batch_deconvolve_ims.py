@@ -18,7 +18,9 @@ import numpy as np
 import tifffile
 from bioio import BioImage
 
-from platform_support import default_fiji_executable
+from imagej_runtime import launch_command, java_environment, runtime_info
+from bioformats_runtime import configure_bioformats
+from platform_support import process_session_options, stop_process_tree
 from ims_writer import write_imaris
 from edit_ims_channels import parse_color
 from psf_channels import read_psf_channels, load_psf_volume
@@ -39,7 +41,6 @@ CHANNEL_ITERATIONS = {}
 CHANNEL_REGULARIZATION = {}
 RLTV_REGULARIZATION = 0.0001
 RLTV_NON_CIRCULANT = True
-FIJI_EXECUTABLE = Path(default_fiji_executable())
 FIJI_MEMORY = "12g"
 OVERWRITE = False
 CHANNEL_EDITS = {}
@@ -96,6 +97,7 @@ def load_psfs():
 
 
 def open_ims(path):
+    configure_bioformats()
     with quiet_bioformats():
         return BioImage(str(path), reader=bioio_bioformats.Reader)
 
@@ -135,10 +137,6 @@ def duration(seconds):
     return f"{seconds}s"
 
 
-def scijava_string(value):
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def run_fiji_one_shot(image, psf, label):
     started = perf_counter()
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
@@ -163,34 +161,15 @@ def run_fiji_one_shot(image, psf, label):
             bigtiff=True,
         )
 
-        parameters = ",".join(
-            (
-                f"input_path={scijava_string(input_tif)}",
-                f"psf_path={scijava_string(psf_tif)}",
-                f"output_path={scijava_string(output_tif)}",
-                f"iterations={ITERATIONS}",
-                f"regularization={RLTV_REGULARIZATION:.17g}",
-                f"non_circulant={'true' if RLTV_NON_CIRCULANT else 'false'}",
-            )
-        )
-        command = [
-            str(FIJI_EXECUTABLE),
-            "--no-splash",
-            "--headless",
-            f"--mem={FIJI_MEMORY}",
-            "-Dimagej.updater.disableAutocheck=true",
-            "--",
-            "--headless",
-            "--run",
-            str(SOURCE_DIR / "fiji_rltv_worker.py"),
-            parameters,
-        ]
-        environment = os.environ.copy()
-        for name in ("JAVA_HOME", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH"):
-            environment.pop(name, None)
+        command = launch_command(FIJI_MEMORY, SOURCE_DIR / "fiji_rltv_worker.py", {
+            'input_path': input_tif, 'psf_path': psf_tif, 'output_path': output_tif,
+            'iterations': ITERATIONS, 'regularization': RLTV_REGULARIZATION,
+            'non_circulant': RLTV_NON_CIRCULANT,
+        })
+        environment = java_environment()
 
         print(
-            f"      Fiji RL-TV {label}: iterations={ITERATIONS}, "
+            f"      ImageJ RL-TV {label}: iterations={ITERATIONS}, "
             f"regularization={RLTV_REGULARIZATION:g}, "
             f"non_circulant={RLTV_NON_CIRCULANT}"
         )
@@ -202,18 +181,25 @@ def run_fiji_one_shot(image, psf, label):
             bufsize=1,
             env=environment,
             cwd=directory,
+            **process_session_options(),
         )
-        for line in process.stdout or ():
-            if line := line.strip():
-                print(f"        Fiji: {line}", flush=True)
-        return_code = process.wait()
+        try:
+            for line in process.stdout or ():
+                if line := line.strip():
+                    print(f"        ImageJ: {line}", flush=True)
+            return_code = process.wait()
+        finally:
+            if process.poll() is None:
+                stop_process_tree(process.pid, force=True)
+                process.wait()
+            process.stdout.close()
         if return_code:
-            raise RuntimeError(f"Fiji exited with status {return_code}")
+            raise RuntimeError(f"ImageJ exited with status {return_code}")
         if not output_tif.is_file():
-            raise RuntimeError("Fiji did not create an output TIFF")
+            raise RuntimeError("ImageJ did not create an output TIFF")
         result = np.asarray(tifffile.imread(output_tif), dtype=np.float32).squeeze()
 
-    print(f"      Fiji RL-TV completed in {duration(perf_counter() - started)}")
+    print(f"      ImageJ RL-TV completed in {duration(perf_counter() - started)}")
     return np.ascontiguousarray(result)
 
 
@@ -222,19 +208,19 @@ _session = None
 
 def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_path=None,
              report_geometry=True, iterations=None, regularization=None):
-    """Reuse Fiji; callers may supply immutable, already prepared TIFFs."""
+    """Reuse ImageJ; callers may supply immutable, already prepared TIFFs."""
     iterations = ITERATIONS if iterations is None else iterations
     regularization = RLTV_REGULARIZATION if regularization is None else regularization
     from fiji_session import FijiClient, FijiSession
     global _session
     if session_directory is None:
-        key = (FIJI_EXECUTABLE.expanduser().resolve(), str(FIJI_MEMORY))
+        key = str(FIJI_MEMORY)
         if (_session is None or _session.closed or _session.process.poll() is not None
                 or (_session.directory / "failed.json").exists()
-                or (_session.executable, _session.memory) != key):
+                or _session.memory != key):
             if _session is not None:
                 _session.close()
-            _session = FijiSession(*key)
+            _session = FijiSession(key)
         session_directory = _session.directory
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
         directory = Path(directory)
@@ -460,7 +446,7 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     names = ('INPUT_DIR', 'OUTPUT_DIR', 'TEMP_DIR', 'PSF_DIR', 'PSF_FILES',
              'PSF_SOURCE', 'ITERATIONS', 'CHANNEL_ITERATIONS', 'CHANNEL_REGULARIZATION',
-             'RLTV_REGULARIZATION', 'RLTV_NON_CIRCULANT', 'FIJI_EXECUTABLE',
+             'RLTV_REGULARIZATION', 'RLTV_NON_CIRCULANT',
              'FIJI_MEMORY', 'OVERWRITE', 'CHANNEL_EDITS', 'CHANNEL_INDICES')
     settings = {name: str(globals()[name].expanduser().resolve())
                 if isinstance(globals()[name], Path) else globals()[name] for name in names}
@@ -482,8 +468,8 @@ def main():
             if _session is not None:
                 ready = _session.directory / 'ready.json'
                 if ready.is_file():
-                    report.data['fiji_runtime'] = json.loads(ready.read_text())
-                report.data['fiji_diagnostics'] = list(_session.diagnostics)
+                    report.data.setdefault('imagej_runtime', {}).update(json.loads(ready.read_text()))
+                report.data['imagej_diagnostics'] = list(_session.diagnostics)
             report.data['finished_utc'] = timestamp()
             report.save()
 
@@ -495,7 +481,6 @@ def run_batch(report):
     report.save()
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     for path in (() if CHANNEL_INDICES == [] else (
-        FIJI_EXECUTABLE,
         SOURCE_DIR / "fiji_rltv_worker.py",
         SOURCE_DIR / "lib/totalvariationterm.cl",
     )):
@@ -504,18 +489,11 @@ def run_batch(report):
     report.data['source_sha256'] = {
         str(path.relative_to(ROOT)): sha256(path) for path in (
             Path(__file__), ROOT / 'app_version.py', SOURCE_DIR / 'generate_gibson_lanni_psfs.py',
-            SOURCE_DIR / 'fiji_session_worker.py', SOURCE_DIR / 'ims_writer.py',
+            SOURCE_DIR / 'fiji_session_worker.py', SOURCE_DIR / 'imagej_runtime.py',
+            SOURCE_DIR / 'imagej/HeadlessImageJ.java', SOURCE_DIR / 'ims_writer.py',
             SOURCE_DIR / 'lib/totalvariationterm.cl')}
-    # Fiji JAR filenames include dependency versions; hash the deconvolution plugins too.
-    fiji_root = next((parent for parent in FIJI_EXECUTABLE.resolve().parents
-                      if (parent / 'jars').is_dir()), None)
-    if fiji_root is not None:
-        jars = sorted(path for folder in ('jars', 'plugins')
-                      for path in (fiji_root / folder).rglob('*.jar'))
-        report.data['fiji_jars'] = [str(path.relative_to(fiji_root)) for path in jars]
-        report.data['fiji_deconvolution_sha256'] = {
-            str(path.relative_to(fiji_root)): sha256(path) for path in jars
-            if 'clij' in path.name.lower()}
+    if CHANNEL_INDICES != []:
+        report.data['imagej_runtime'] = runtime_info()
     channels, psfs = load_psfs()
     report.record_psfs(channels, psfs)
     if not input_files:

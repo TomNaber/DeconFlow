@@ -81,7 +81,7 @@ class BatchReport:
                          environment=dict(python=sys.version, platform=platform.platform(), packages=packages,
                                           application_version=runpy.run_path(str(Path(__file__).resolve().parent.parent / 'app_version.py'))['__version__']),
                          channel_index_convention='zero-based',
-                         algorithm='Fiji CLIJx DeconvolveRichardsonLucyFFT (RL-TV)',
+                         algorithm='ImageJ CLIJx DeconvolveRichardsonLucyFFT (RL-TV)',
                          input_conversion='float32; nonfinite and negative values set to zero; signed int8 reinterpreted as uint8',
                          psf_conversion='float32; nonfinite and negative values set to zero; normalized to unit sum',
                          output_conversion='uint16; nonfinite and negative values set to zero; round to nearest; clip at 65535',

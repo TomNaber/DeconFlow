@@ -4,8 +4,9 @@ The version lives in `app_version.py`. Update it before building a release; it
 appears in the window title, `python main.py --version`, archive names, and the
 macOS bundle metadata. The initial version is 0.1.0.
 
-Build on each target OS and architecture: Apple Silicon macOS, Intel macOS, and
-Windows x64. Cross-compilation is not supported. Start with a clean environment
+Build on each target OS and architecture: Apple Silicon macOS 14+, Intel macOS
+13+, and Windows x64. These minimums reflect the pinned CLIJ2-FFT native binaries
+and are also written into the macOS application metadata. Cross-compilation is not supported. Start with a clean environment
 from `environment.yml`, activate it, then install the packaging dependency:
 
 ```sh
@@ -28,7 +29,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
 
 Both accept `--output PATH` and write a versioned ZIP and SHA-256 file into
 `dist/` by default. Existing release files are never overwritten. Builds check
-installed dependencies, native imports, and Java before packaging. The complete
+installed dependencies, native imports, and Java before packaging. They also run
+`scripts/setup_imagej.py` to automatically provision Java 21 in the build
+environment and install/verify the pinned ImageJ and Bio-Formats runtimes, then copy them into
+the release app folder. Downloads are required only when locked artifacts are
+missing or corrupt. Dependency notices and the lock manifest are included. The complete
 active Conda environment is included, so build from a dedicated environment
 without private files or unrelated packages. See the
 [conda-pack documentation](https://conda.github.io/conda-pack/) for runtime
@@ -39,10 +44,17 @@ relocation details.
 - macOS: extract the ZIP, move `Batch Deconvolution.app` to Applications, and open it.
 - Windows: extract the entire ZIP and double-click `Launch.cmd` inside its folder.
 
-Python, Tk, Java, and installed Python dependencies are bundled. Users do not
-need Conda. Fiji is **not** bundled: install the matching Fiji distribution,
-enable CLIJ, CLIJ2, and clijx-deconvolution, and select its executable in the app.
-The first Bio-Formats use may require internet access to fetch its Java artifacts.
+Python, Tk, Java 21, Python dependencies, and the pinned headless ImageJ/CLIJ2
+runtime are bundled. Users do not need Conda or Fiji and do not select an
+executable. The ImageJ libraries live in `app/runtime/imagej/`; the exact artifact
+versions and hashes are in `app/source/imagej/runtime.json`. Startup verifies
+these hashes and never falls back to an external Fiji installation.
+Bio-Formats 8.5.0 and its dependencies are included as the official upstream
+bundle, verified against `app/source/bioformats/runtime.json`. Maven resolution
+and Java downloading are disabled during image reading. First launch and image
+processing work without internet access; no separate Java or Fiji installation
+is needed. The launcher verifies bundled Java before marking initial extraction
+complete.
 Input images and generated PSFs are not included; generate or select your PSFs.
 
 On first launch the runtime is extracted and relocated into the user's
@@ -54,10 +66,18 @@ removed when no app is using them. On macOS startup errors are written to
 `launcher.log` in that folder. If an interrupted macOS setup leaves a
 `runtime-*.lock` directory, remove it after confirming the app is closed and retry.
 Default data/output folders are under Documents/Batch Deconvolution, so the
-application bundle does not need to be writable. Existing saved settings still apply.
+application bundle does not need to be writable. Existing saved settings still apply; obsolete Fiji executable paths are ignored.
+ImageJ native-library extraction uses the user cache (`Library/Caches/Batch
+Deconvolution` on macOS or `%LOCALAPPDATA%\Batch Deconvolution\cache` on Windows),
+and job files use temporary directories. The ImageJ app folder may be read-only.
+A missing or corrupt packaged ImageJ runtime requires reinstalling the release.
+Source installations can be repaired with `python scripts/setup_imagej.py`.
 
 These are unsigned deliverables, not signed/notarized installers. macOS security
 policy may block downloaded builds until approved by the user or administrator.
 Before distributing a release, verify GUI startup, PSF generation, preview, and
 IMS export on a clean machine for each target architecture. A successful build
-does not validate Fiji's GPU/OpenCL setup.
+does not validate the target machine's GPU/OpenCL setup. Java is bundled from
+the build environment; ImageJ artifact versions are fixed by the manifest.
+Any manifest upgrade must repeat numerical, lifecycle, and native-platform
+validation before release.
