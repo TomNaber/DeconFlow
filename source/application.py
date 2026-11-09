@@ -22,6 +22,7 @@ from app_version import __version__
 from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST, contrast_maximum
 from source.channel_metadata import read_channels, text
 from source.edit_ims_channels import NAMED_COLORS
+from source.median_kernels import MEDIAN_KERNELS, kernel_label
 from source.platform_support import process_session_options, stop_process_tree
 from source.preview import Preview
 from source.psf_channels import read_psf_channels
@@ -210,10 +211,7 @@ class Application:
         self.field(self.deconvolution,'Deconvolution',1,'RLTV_NON_CIRCULANT','Non-circulant boundary correction',True,bool)
         self.channel_panel = ttk.Frame(self.deconvolution)
         self.channel_panel.grid(row=2,column=0,columnspan=2,sticky='ew',pady=(1,8))
-        self.field(self.deconvolution,'Deconvolution',3,'POST_PROCESSING','Post-processing',False,bool)
-        self.post_panel = ttk.LabelFrame(self.deconvolution,text='Post-processing',padding=6)
-        self.post_panel.grid(row=4,column=0,columnspan=2,sticky='ew')
-        self.post_panel.grid_remove()
+        self.post_panel = self.group('Post-processing')
         self.post_vars = {}
         self.settings_grid_parents = [self.post_panel,self.setup,scale,self.optics,self.deconvolution,
                                       self.definition_panel,self.external_channels,self.channel_panel]
@@ -436,8 +434,6 @@ class Application:
     def field_changed(self,group,name):
         if self.loading:
             return
-        if name=='POST_PROCESSING':
-            self.render_post_processing()
         if name=='INPUT_DIR':
             if self.refresh_job:
                 self.window.after_cancel(self.refresh_job)
@@ -474,7 +470,7 @@ class Application:
         if changed:
             self.invalidate(psf=True)
 
-    def invalidate(self,psf=False,preview=True):
+    def invalidate(self,psf=False,preview=True,post_processing=False):
         if self.loading:
             return
         if preview:
@@ -483,7 +479,8 @@ class Application:
                 self.pending = None
             if self.process and not self.batch_locked and psf:
                 self.stop_worker()
-            self.preview.cancel_deconvolution()
+            if not post_processing:
+                self.preview.cancel_deconvolution()
             self.preview.parameters_changed()
         if psf:
             self.psf_revision += 1
@@ -750,11 +747,7 @@ class Application:
         for widget in self.post_panel.winfo_children():
             widget.destroy()
         self.post_vars.clear()
-        if not self.fields['Deconvolution']['POST_PROCESSING'][0].get():
-            self.post_panel.grid_remove()
-            return
-        self.post_panel.grid()
-        for col,label in enumerate(('Channel','New channel name','Filter','Kernel (voxels)')):
+        for col,label in enumerate(('Channel','New channel name','Filter','Kernel (X×Y×Z voxels)')):
             ttk.Label(self.post_panel,text=label).grid(row=0,column=col,sticky='w',padx=3)
         self.post_panel.columnconfigure(1,weight=1)
         for row,channel in enumerate(self.active_channels,1):
@@ -762,11 +755,11 @@ class Application:
             pref = self.preferences[key]
             name = tk.StringVar(value=pref.get('post_name',pref['name']))
             method = tk.StringVar(value=pref.get('post_filter','None'))
-            kernel = tk.StringVar(value=pref.get('post_kernel',3))
+            kernel = tk.StringVar(value=kernel_label(pref.get('post_kernel',3)))
             ttk.Label(self.post_panel,text=f"C{channel['index']+1}").grid(row=row,column=0,sticky='w')
             entry = ttk.Entry(self.post_panel,textvariable=name,width=8)
             choice = ttk.Combobox(self.post_panel,textvariable=method,values=('None','Median filter'),state='readonly',width=12)
-            size = ttk.Combobox(self.post_panel,textvariable=kernel,values=(3,5,7),state='readonly',width=3)
+            size = ttk.Combobox(self.post_panel,textvariable=kernel,values=MEDIAN_KERNELS,state='readonly',width=7)
             enabled = pref.get('enabled',True)
             for col,widget in enumerate((entry,choice,size),1):
                 widget.grid(row=row,column=col,sticky='ew',padx=3,pady=3)
@@ -775,7 +768,7 @@ class Application:
             def changed(*args,key=key,name=name,method=method,kernel=kernel,size=size,enabled=enabled):
                 self.preferences[key].update(post_name=name.get(),post_filter=method.get(),post_kernel=kernel.get())
                 size.configure(state='readonly' if enabled and method.get()=='Median filter' else 'disabled')
-                self.invalidate(preview=True)
+                self.invalidate(preview=True,post_processing=True)
             for var in (name,method,kernel):
                 var.trace_add('write',changed)
             self.post_vars[key] = (name,method,kernel)
@@ -853,12 +846,12 @@ class Application:
         return result
 
     def deconvolution_settings(self,indices,batch=False,catalog=None,require_psfs=True):
-        names = list(self.fields['Deconvolution']) if batch else ['FIJI_MEMORY','RLTV_NON_CIRCULANT','POST_PROCESSING']
+        names = list(self.fields['Deconvolution']) if batch else ['FIJI_MEMORY','RLTV_NON_CIRCULANT']
         settings = {name:self.read_field('Deconvolution',name) for name in names}
         settings['FIJI_MEMORY'] = memory_argument(settings['FIJI_MEMORY'])
         if not indices:
             raise ValueError('Select at least one input channel.')
-        settings.update(CHANNEL_INDICES=list(indices),CHANNEL_ITERATIONS={},CHANNEL_REGULARIZATION={},
+        settings.update(POST_PROCESSING=True,CHANNEL_INDICES=list(indices),CHANNEL_ITERATIONS={},CHANNEL_REGULARIZATION={},
                         RLTV_REGULARIZATION=self.default_regularization,OUTPUT_CHANNEL_NAMES={},CHANNEL_POST_PROCESSING={})
         if batch:
             settings.pop('OUTPUT_CHANNEL_NAMES')
@@ -879,13 +872,12 @@ class Application:
                 raise ValueError(f'Enter non-negative regularization for C{index+1}.') from None
             settings['CHANNEL_REGULARIZATION'][str(index)] = regularization
             name = pref['name'].strip()
-            if settings['POST_PROCESSING']:
-                name = pref.get('post_name',name).strip()
-                method = pref.get('post_filter','None')
-                kernel = int(pref.get('post_kernel',3))
-                if method not in ('None','Median filter') or kernel not in (3,5,7):
-                    raise ValueError(f'Select a valid filter and kernel for C{index+1}.')
-                settings['CHANNEL_POST_PROCESSING'][str(index)] = dict(filter=method,kernel=kernel)
+            name = pref.get('post_name',name).strip()
+            method = pref.get('post_filter','None')
+            kernel = kernel_label(pref.get('post_kernel',3))
+            if method not in ('None','Median filter'):
+                raise ValueError(f'Select a valid filter and kernel for C{index+1}.')
+            settings['CHANNEL_POST_PROCESSING'][str(index)] = dict(filter=method,kernel=kernel)
             if not name:
                 raise ValueError(f'Enter an output name for C{index+1}.')
             settings['CHANNEL_ITERATIONS'][str(index)] = iterations

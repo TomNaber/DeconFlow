@@ -27,6 +27,7 @@ from psf_channels import read_psf_channels, load_psf_volume
 from console_progress import ProgressLine
 from channel_metadata import read_channels
 from batch_report import BatchReport, timestamp, sha256
+from median_kernels import kernel_zyx
 
 
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -255,10 +256,10 @@ def post_process(result, settings):
     method = settings.get('filter', 'None')
     if method == 'None':
         return result
-    if method != 'Median filter' or settings.get('kernel', 3) not in (3, 5, 7):
-        raise ValueError('Select None or Median filter with a kernel of 3, 5, or 7 voxels.')
+    if method != 'Median filter':
+        raise ValueError('Select None or Median filter.')
     from scipy.ndimage import median_filter
-    return median_filter(result, size=settings.get('kernel', 3), mode='reflect')
+    return median_filter(result, size=kernel_zyx(settings.get('kernel', 3)), mode='reflect')
 
 
 def store_result(result):

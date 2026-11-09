@@ -98,16 +98,23 @@ def channel_settings(settings, index):
         fingerprint = (str(path), None)
     return {
         **{key: value for key, value in settings.items()
-           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES", "CHANNEL_ITERATIONS", "CHANNEL_REGULARIZATION")},
+           if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES", "CHANNEL_ITERATIONS", "CHANNEL_REGULARIZATION", "CHANNEL_POST_PROCESSING")},
         "RLTV_REGULARIZATION": settings.get("CHANNEL_REGULARIZATION", {}).get(str(index), settings.get("RLTV_REGULARIZATION", .0001)),
         "ITERATIONS": settings.get("CHANNEL_ITERATIONS", {}).get(str(index), settings.get("ITERATIONS", 40)),
+        "OUTPUT_CHANNEL_NAME": settings.get("OUTPUT_CHANNEL_NAMES", {}).get(str(index)),
+        "CHANNEL_POST_PROCESSING": settings.get("CHANNEL_POST_PROCESSING", {}).get(str(index), {}),
         "PSF_FILE": filename,
         "PSF_FINGERPRINT": fingerprint,
     }
 
 
+def deconvolution_key(processing):
+    return {key: value for key, value in processing.items()
+            if key not in ("POST_PROCESSING", "CHANNEL_POST_PROCESSING", "OUTPUT_CHANNEL_NAME")}
+
+
 class PreviewCache:
-    """One crop per source channel and one PSF/result per selected channel."""
+    """Bounded per-channel caches for inputs, PSFs, deconvolution and final previews."""
     def __init__(self, directory, volumes, original):
         self.directory = Path(directory)
         self.volumes = {c["index"]: (v, c) for v, c in zip(volumes, original["channels"])}
@@ -115,6 +122,7 @@ class PreviewCache:
         self.inputs = {}
         self.psfs = {}
         self.results = {}
+        self.deconvolved = {}
 
     def bounds(self, settings):
         bounds = settings.get("CROP_BOUNDS", {a: [0, n] for a, n in zip("zyx", self.original["shape"])})
@@ -146,9 +154,10 @@ class PreviewCache:
             for index in list(cache):
                 if index not in selected:
                     cache.pop(index)[1].unlink(missing_ok=True)
-        for index in list(self.results):
-            if index not in selected:
-                del self.results[index]
+        for cache in (self.results, self.deconvolved):
+            for index in list(cache):
+                if index not in selected:
+                    del cache[index]
         for index in selected:
             if stale():
                 return
@@ -189,23 +198,28 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
     if stale():
         return cache.original
     bounds = cache.bounds(settings)
-    crop_xyz = [bounds[axis][1] - bounds[axis][0] for axis in "xyz"]
-    geometries = []
-    for index in selected:
-        with tifffile.TiffFile(cache.psfs[index][1]) as psf:
-            psf_xyz = list(reversed(psf.series[0].shape))
-        geometries.append({"crop": crop_xyz, "psf": psf_xyz})
-    geometries = FijiClient(settings["FIJI_SESSION"]).inspect_geometries(
-        geometries, settings["RLTV_NON_CIRCULANT"])
+    processing_by_channel = {index: channel_settings(settings, index) for index in selected}
+    missing = [index for index in selected
+               if settings.get("FORCE", False) or index not in cache.deconvolved
+               or cache.deconvolved[index][0] != deconvolution_key(processing_by_channel[index])]
+    if missing:
+        crop_xyz = [bounds[axis][1] - bounds[axis][0] for axis in "xyz"]
+        geometries = []
+        for index in missing:
+            with tifffile.TiffFile(cache.psfs[index][1]) as psf:
+                psf_xyz = list(reversed(psf.series[0].shape))
+            geometries.append({"crop": crop_xyz, "psf": psf_xyz})
+        geometries = FijiClient(settings["FIJI_SESSION"]).inspect_geometries(
+            geometries, settings["RLTV_NON_CIRCULANT"])
+
+        def dimensions(field):
+            shapes = list(dict.fromkeys(tuple(item[field]) for item in geometries))
+            return " or ".join(" x ".join(str(n) for n in shape) for shape in shapes)
+
+        cache_status = "new" if any(item["cache"] == "new" for item in geometries) else "reused"
+        print(f"Crop XYZ {dimensions('crop')}. PSF XYZ {dimensions('psf')}. "
+              f"Padded FFT XYZ {dimensions('fft')}. FFT cache {cache_status}.", flush=True)
     initialized()
-
-    def dimensions(field):
-        shapes = list(dict.fromkeys(tuple(item[field]) for item in geometries))
-        return " or ".join(" x ".join(str(n) for n in shape) for shape in shapes)
-
-    cache_status = "new" if any(item["cache"] == "new" for item in geometries) else "reused"
-    print(f"Crop XYZ {dimensions('crop')}. PSF XYZ {dimensions('psf')}. "
-          f"Padded FFT XYZ {dimensions('fft')}. FFT cache {cache_status}.", flush=True)
     projections = []
     public_settings = {key: value for key, value in settings.items() if key not in ("FIJI_SESSION", "FORCE")}
     for position, index in enumerate(selected, start=1):
@@ -214,25 +228,29 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
         volume, channel = cache.volumes[index]
         output_name = settings.get("OUTPUT_CHANNEL_NAMES", {}).get(str(index), channel["name"])
         label = f"Preview C{position}/{len(selected)} {output_name}"
-        processing = channel_settings(settings, index)
-        processing["PSF_FINGERPRINT"] = cache.psfs[index][0]
+        processing = processing_by_channel[index]
         previous = cache.results.get(index)
         if not settings.get("FORCE", False) and previous is not None and previous["processing"] == processing:
             projection = previous
             print(f"{label} completed in 0.0s (cached).", flush=True)
         else:
-            result = batch.run_fiji(None, None, label,
-                                   session_directory=settings["FIJI_SESSION"],
-                                   input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1],
-                                   report_geometry=False, iterations=processing["ITERATIONS"],
-                                   regularization=processing["RLTV_REGULARIZATION"])
-            shape = tuple(bounds[a][1] - bounds[a][0] for a in "zyx")
-            if result.size != np.prod(shape):
-                raise ValueError("Deconvolution returned an unexpected image size.")
-            started = perf_counter()
-            result = result.reshape(shape)
+            if index in missing:
+                result = batch.run_fiji(None, None, label,
+                                       session_directory=settings["FIJI_SESSION"],
+                                       input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1],
+                                       report_geometry=False, iterations=processing["ITERATIONS"],
+                                       regularization=processing["RLTV_REGULARIZATION"])
+                shape = tuple(bounds[a][1] - bounds[a][0] for a in "zyx")
+                if result.size != np.prod(shape):
+                    raise ValueError("Deconvolution returned an unexpected image size.")
+                cache.deconvolved[index] = (deconvolution_key(processing), result.reshape(shape))
+                cache.results.pop(index, None)
+            else:
+                print(f"{label}: updating post-processing (cached deconvolution).", flush=True)
+            # Quantization sanitizes in place; preserve the unfiltered floating-point cache.
+            result = cache.deconvolved[index][1].copy()
             if settings.get('POST_PROCESSING', False):
-                result = batch.post_process(result, settings.get('CHANNEL_POST_PROCESSING', {}).get(str(index), {}))
+                result = batch.post_process(result, processing["CHANNEL_POST_PROCESSING"])
             stored = batch.store_result(result)
             projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
                           "range": display_range(stored),
@@ -270,6 +288,7 @@ def run(connection, path, cache_directory):
                 break
             if request == "clear_result":
                 cache.results.clear()
+                cache.deconvolved.clear()
                 continue
             if request[0] == "project_original":
                 _, bounds, axes = request

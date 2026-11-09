@@ -15,7 +15,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
-from source.preview_worker import channel_settings, run
+from source.preview_worker import channel_settings, deconvolution_key, run
 from source.preview_gestures import install_pinch
 from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, plane_axes, draw_scale_bar
 from source.fiji_session import FijiSession, atomic_json
@@ -321,6 +321,14 @@ class Preview(ttk.Frame):
                        for index, value in processing.items()):
                     return
         settings["FORCE"] = not automatic
+        if self.deconvolved is not None:
+            previous = {channel["index"]: channel["processing"] for channel in self.deconvolved["channels"]}
+            processing = {index: channel_settings(settings, index) for index in self.selected_channels}
+            if (all(index in previous and deconvolution_key(previous[index]) == deconvolution_key(value)
+                    for index, value in processing.items())
+                    and any(previous[index] != value for index, value in processing.items())):
+                # Manual updates after a filter/name edit also reuse deconvolution.
+                settings["FORCE"] = False
         self.pending = (self.revision, settings)
         self.start_pending()
 
