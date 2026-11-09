@@ -1,25 +1,120 @@
 """Display-only contrast and controls shared by the preview tabs."""
+import math
 import tkinter as tk
 from tkinter import ttk
+
+from source.view_controls import ResetButton
 
 import numpy as np
 
 
-NEUTRAL_CONTRAST = 128
+NEUTRAL_CONTRAST = (0.0, 0.5, 1.0)
 
 
-def contrast_maximum(channel):
-    """Derive the control range from the image being displayed."""
-    dtype = channel['xy'].dtype
-    if np.issubdtype(dtype, np.integer):
-        return int(np.iinfo(dtype).max)
-    return 255
+def format_intensity(value):
+    """Compact half-unit readouts; derived midpoints retain exact gamma internally."""
+    return f'{round(value * 2) / 2:.1f}'.removesuffix('.0')
+
+
+def contrast_range(channel):
+    """Return the same range used to normalize the rendered channel."""
+    return tuple(channel.get('range', (0.0, 1.0)))
 
 
 def apply_contrast(intensity, contrast):
     if contrast == NEUTRAL_CONTRAST:
         return intensity
-    return np.power(intensity, 2 ** ((NEUTRAL_CONTRAST - contrast) / 64))
+    black, midpoint, white = contrast
+    scaled = np.clip((intensity - black) / (white - black), 0, 1)
+    gamma = np.log(0.5) / np.log((midpoint - black) / (white - black))
+    return np.power(scaled, gamma)
+
+
+class ContrastSlider(tk.Canvas):
+    """Three draggable handles in normalized display coordinates."""
+    def __init__(self, parent, command, limits):
+        super().__init__(parent, width=120, height=24, highlightthickness=0,
+                         takefocus=True, background=ttk.Style(parent).lookup('TFrame', 'background') or '#eeeeee')
+        self.command = command
+        self.low, self.high = limits
+        self.increment = 0.5 / (self.high - self.low)
+        self.values = NEUTRAL_CONTRAST
+        self.active = 1
+        self.bind('<Configure>', self.draw)
+        self.bind('<Button-1>', self.press)
+        self.bind('<B1-Motion>', self.drag)
+        self.bind('<Left>', lambda event: self.step(-self.increment))
+        self.bind('<Right>', lambda event: self.step(self.increment))
+        self.bind('<Up>', lambda event: self.select(-1))
+        self.bind('<Down>', lambda event: self.select(1))
+
+    def draw(self, event=None):
+        self.delete('all')
+        width = max(1, self.winfo_width() - 20)
+        self.create_line(10, 12, 10 + width, 12, fill='#888888', width=3)
+        for index, (value, color) in enumerate(zip(self.values, ('#222222', '#999999', '#ffffff'))):
+            x = 10 + value * width
+            self.create_oval(x - 6, 6, x + 6, 18,
+                                fill=color, outline='#3984d6' if index == self.active else '#666666',
+                                width=2)
+
+    def set(self, values):
+        self.values = values
+        self.draw()
+
+    def move(self, value):
+        black, midpoint, white = self.values
+        fraction = (midpoint - black) / (white - black)
+        gap = 1e-6
+        lower, upper = ((0.0, white - gap) if self.active == 0 else
+                        (black + gap, 1.0) if self.active == 2 else
+                        (black + (white - black) * gap, white - (white - black) * gap))
+        span = self.high - self.low
+        first_bin = math.ceil((self.low + lower * span) * 2)
+        last_bin = math.floor((self.low + upper * span) * 2)
+        if first_bin > last_bin:
+            self.command(self.values)
+            return
+        native_bin = min(last_bin, max(first_bin, round((self.low + value * span) * 2)))
+        value = (native_bin / 2 - self.low) / span
+        if self.active == 0:
+            black = min(white - gap, max(0.0, value))
+            midpoint = black + fraction * (white - black)
+        elif self.active == 2:
+            white = max(black + gap, min(1.0, value))
+            midpoint = black + fraction * (white - black)
+        else:
+            margin = (white - black) * gap
+            midpoint = min(white - margin, max(black + margin, value))
+        values = (black, midpoint, white)
+        if values != self.values:
+            self.command(values)
+        else:
+            self.draw()
+
+    def press(self, event):
+        self.focus_set()
+        width = max(1, self.winfo_width() - 20)
+        position = (event.x - 10) / width
+        self.active = min(range(3), key=lambda i: abs(self.values[i] - position))
+        # Grabbing a handle should not shift it before the pointer moves.
+        self.drag_offset = self.values[self.active] - position
+        if abs(self.drag_offset * width) > 8:
+            self.drag_offset = 0.0
+            self.move(position)
+        self.draw()
+
+    def drag(self, event):
+        self.move((event.x - 10) / max(1, self.winfo_width() - 20) + self.drag_offset)
+
+    def step(self, delta):
+        self.move(self.values[self.active] + delta)
+        return 'break'
+
+    def select(self, delta):
+        self.active = (self.active + delta) % 3
+        self.draw()
+        return 'break'
 
 
 class ChannelAdjustment(ttk.Notebook):
@@ -74,51 +169,52 @@ class ChannelAdjustment(ttk.Notebook):
             ttk.Label(self.table, text='Contrast').grid(row=0, column=1, columnspan=4)
             self.table.columnconfigure(2, weight=1)
             self.controls = [self.add_row(i, *row[:4]) for i, row in enumerate(rows, 1)]
-        for (checkbox, slider, entry), (_, _, _, maximum, visible, contrast) in zip(self.controls, rows):
+        for (checkbox, slider, entries), (_, _, _, limits, visible, contrast) in zip(self.controls, rows):
             checkbox.set(visible)
-            display_value = round(contrast * (maximum + 1) / 256)
-            if slider.get() != display_value:
-                slider.set(display_value)
-                entry.set(str(display_value))
+            slider.set(contrast)
+            low, high = limits
+            for entry, value in zip(entries, contrast):
+                entry.set(format_intensity(low + value * (high - low)))
         return structure_changed
 
-    def add_row(self, row, kind, index, name, maximum):
+    def add_row(self, row, kind, index, name, limits):
         visible = tk.BooleanVar(self)
         ttk.Checkbutton(
             self.table, text=f'C{index + 1} ({kind}): {name}', variable=visible,
             command=lambda: self.changed(kind, index, visible=visible.get()),
         ).grid(row=row, column=0, sticky='w', padx=(0, 8))
-        ttk.Label(self.table, text='0').grid(row=row, column=1)
-        neutral = (maximum + 1) // 2
-        value = tk.DoubleVar(self, value=neutral)
-        entry_value = tk.StringVar(self, value=str(neutral))
+        low, high = limits
+        entries = [tk.StringVar(self) for _ in range(3)]
 
         def set_value(contrast):
-            value.set(contrast)
-            entry_value.set(str(contrast))
-            # Keep gamma independent of bit depth; the controls show native units.
-            self.changed(kind, index, contrast=contrast * 256 / (maximum + 1))
+            slider.set(contrast)
+            for entry, value in zip(entries, contrast):
+                entry.set(format_intensity(low + value * (high - low)))
+            self.changed(kind, index, contrast=contrast)
 
-        ttk.Scale(self.table, from_=0, to=maximum, variable=value,
-                  command=lambda raw: set_value(round(float(raw)))).grid(
-                      row=row, column=2, sticky='ew', padx=4)
-        ttk.Label(self.table, text=str(maximum)).grid(row=row, column=3)
-        entry = ttk.Spinbox(self.table, textvariable=entry_value, from_=0, to=maximum, increment=1, width=max(4, len(str(maximum))))
-        entry.grid(row=row, column=4, padx=(6, 3), pady=1)
+        slider = ContrastSlider(self.table, set_value, limits)
+        slider.grid(row=row, column=2, sticky='ew', padx=4)
 
-        def commit(event=None):
+        def commit(index):
+            current = format_intensity(low + slider.values[index] * (high - low))
+            if entries[index].get() == current:
+                return
             try:
-                contrast = int(entry_value.get())
+                value = (float(entries[index].get()) - low) / (high - low)
+                if not np.isfinite(value):
+                    raise ValueError()
             except ValueError:
-                contrast = -1
-            if 0 <= contrast <= maximum:
-                set_value(contrast)
-            else:
-                entry_value.set(str(round(value.get())))
+                entries[index].set(format_intensity(low + slider.values[index] * (high - low)))
+                return
+            slider.active = index
+            slider.move(value)
+            entries[index].set(format_intensity(low + slider.values[index] * (high - low)))
 
-        entry.bind('<Return>', commit)
-        entry.bind('<FocusOut>', commit)
-        entry.configure(command=commit)
-        ttk.Button(self.table, text='Reset', width=5,
-                   command=lambda: set_value(neutral)).grid(row=row, column=5, padx=(4, 0))
-        return visible, value, entry_value
+        for point_index, column in ((0, 1), (2, 3), (1, 4)):
+            entry = ttk.Entry(self.table, textvariable=entries[point_index], width=6, justify='right')
+            entry.grid(row=row, column=column, padx=2, pady=1)
+            entry.bind('<Return>', lambda event, i=point_index: commit(i))
+            entry.bind('<FocusOut>', lambda event, i=point_index: commit(i))
+        ResetButton(self.table, lambda: set_value(NEUTRAL_CONTRAST)).grid(
+            row=row, column=5, padx=(4, 0))
+        return visible, slider, entries

@@ -87,6 +87,27 @@ def draw_scale_bar(image, pixels_per_um, viewport=None):
               label, font=label_font, fill='white', stroke_width=1, stroke_fill='black')
 
 
+class ResetButton(ttk.Frame):
+    """The compact native reset control shared with the zoom bar."""
+    def __init__(self, parent, command, size=None):
+        if size is None:
+            icon = tk.PhotoImage(master=parent, file=str(Path(__file__).with_name('assets') / 'zoom-in.png'))
+            size = icon.width()
+        super().__init__(parent, width=size, height=size)
+        self.pack_propagate(False)
+        style = ttk.Style(self)
+        style.configure('ZoomReset.TButton',padding=0,anchor='center',font=('Arial',14))
+        # Overlay the label on the native button instead of nesting it inside
+        # Aqua's content insets, which clip the glyph at this compact size.
+        style.layout('ZoomReset.TButton',[
+            ('Button.button',{'sticky':'nswe'}),
+            ('Button.label',{'sticky':'nswe'}),
+        ])
+        self.button = ttk.Button(self,text='↺',style='ZoomReset.TButton',
+                                       width=1,command=command,takefocus=True)
+        self.button.place(x=0,y=0,width=size,height=size)
+
+
 class ZoomBar(ttk.Frame):
     def __init__(self, parent, zoom, changed, reset):
         super().__init__(parent)
@@ -102,20 +123,9 @@ class ZoomBar(ttk.Frame):
         self.slider.pack(fill='y',expand=True,pady=4)
         ttk.Label(self,image=self.icons['zoom-out'],anchor='center').pack()
         size = self.icons['zoom-in'].width()
-        reset_holder = ttk.Frame(self,width=size,height=size)
+        reset_holder = ResetButton(self, reset, size=size)
         reset_holder.pack(pady=(4,0))
-        reset_holder.pack_propagate(False)
-        style = ttk.Style(self)
-        style.configure('ZoomReset.TButton',padding=0,anchor='center',font=('Arial',14))
-        # Overlay the label on the native button instead of nesting it inside
-        # Aqua's content insets, which clip the glyph at this compact size.
-        style.layout('ZoomReset.TButton',[
-            ('Button.button',{'sticky':'nswe'}),
-            ('Button.label',{'sticky':'nswe'}),
-        ])
-        self.reset_button = ttk.Button(reset_holder,text='↺',style='ZoomReset.TButton',
-                                       width=1,command=reset,takefocus=True)
-        self.reset_button.place(x=0,y=0,width=size,height=size)
+        self.reset_button = reset_holder.button
         # Reserve the maximum readout width so zooming never moves the panes.
         readout_font = font.nametofont('TkDefaultFont')
         readout = ttk.Frame(self,width=readout_font.measure('6400%')+2,height=readout_font.metrics('linespace')+2)

@@ -57,7 +57,7 @@ class Preview(ttk.Frame):
         self.events = queue.Queue()
         self.data = None
         self.deconvolved = None
-        self.channel_visibility = {}
+        self.channel_visibility = ({}, {})
         self.channel_contrast = ({}, {})
         self.busy = None
         self.revision = 0
@@ -192,8 +192,8 @@ class Preview(ttk.Frame):
         self.parameters_changed()
         self.update_controls()
 
-    def channel_visible(self, index):
-        return self.channel_visibility.get(
+    def channel_visible(self, index, row=0):
+        return self.channel_visibility[row].get(
             index, self.preferences.get(str(index), {}).get("enabled", True))
 
     def display_channels(self, row, visible_only=True):
@@ -203,7 +203,7 @@ class Preview(ttk.Frame):
         eligible = self.selected_channels if row else None
         return [channel for channel in data["channels"]
                 if (eligible is None or channel["index"] in eligible)
-                and (not visible_only or self.channel_visible(channel["index"]))]
+                and (not visible_only or self.channel_visible(channel["index"], row))]
 
     def set_folder(self, folder):
         self.folder = Path(folder).expanduser()
@@ -839,7 +839,8 @@ class Preview(ttk.Frame):
             self.cache_directory = None
         self.data = None
         self.deconvolved = None
-        self.channel_visibility.clear()
+        for visibility in self.channel_visibility:
+            visibility.clear()
         for contrast in self.channel_contrast:
             contrast.clear()
         self.crop = None

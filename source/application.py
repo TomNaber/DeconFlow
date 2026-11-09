@@ -19,7 +19,7 @@ from tkinter.scrolledtext import ScrolledText
 import h5py
 
 from app_version import __version__
-from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST, contrast_maximum
+from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST, contrast_range
 from source.channel_metadata import read_channels, text
 from source.edit_ims_channels import NAMED_COLORS
 from source.median_kernels import MEDIAN_KERNELS, kernel_label
@@ -606,7 +606,8 @@ class Application:
     def selection_changed(self,key):
         enabled = self.enabled_vars[key].get()
         self.preferences[key]['enabled'] = enabled
-        self.preview.channel_visibility[int(key)] = enabled
+        for visibility in self.preview.channel_visibility:
+            visibility[int(key)] = enabled
         self.render_definitions()
         self.render_external_channels()
         self.render_channels()
@@ -1126,11 +1127,11 @@ class Application:
             contrast = self.preview.channel_contrast[row]
             for channel in sorted(self.preview.display_channels(row, visible_only=False), key=lambda c: c['index']):
                 index = channel['index']
-                rows.append((kind, index, channel['name'], contrast_maximum(channel), self.preview.channel_visible(index),
+                rows.append((kind, index, channel['name'], contrast_range(channel), self.preview.channel_visible(index, row),
                              contrast.get(index, NEUTRAL_CONTRAST)))
         for channel in sorted(self.psf_view.selected(visible_only=False), key=lambda c: c['index']):
             index = channel['index']
-            rows.append(('PSF', index, channel['name'], contrast_maximum(channel), self.psf_view.channel_visibility.get(index, True),
+            rows.append(('PSF', index, channel['name'], contrast_range(channel), self.psf_view.channel_visibility.get(index, True),
                          self.psf_view.channel_contrast.get(index, NEUTRAL_CONTRAST)))
         self.channel_adjustment.grid()
         if self.channel_adjustment.display(tuple(rows)):
@@ -1142,7 +1143,7 @@ class Application:
             contrasts = self.psf_view.channel_contrast
             redraw = self.psf_view.draw
         else:
-            visibility = self.preview.channel_visibility
+            visibility = self.preview.channel_visibility[kind == 'Deconvolved']
             contrasts = self.preview.channel_contrast[kind == 'Deconvolved']
             redraw = self.preview.recolor
         if visible is not None:
