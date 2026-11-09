@@ -1,4 +1,9 @@
-# Batch Deconvolution
+# DeconFlow
+
+<p align="center">
+  <img src="docs/images/deconvolution-preview.png" width="49%" alt="Deconvolution preview">
+  <img src="docs/images/psf-preview.png" width="49%" alt="Gibson-Lanni PSF">
+</p>
 
 ## About
 
@@ -6,9 +11,9 @@ Why do we need another deconvolution app? Because we want all of the following a
 - Gibson-Lanni point-spread functions to correct for all media the light passes through.
 - Richardson-Lucy deconvolution with non-circulant edge correction and total variation regularization.
 - GPU acceleration of deconvolution.
-- Interactive preview showing XY and YZ dimensions of Z-stack with linked zoom and positioning between original and deconvolved preview and supporting running deconvolution on a crop, allowing you to see the result of a parameter change in seconds.
+- Interactive preview showing XY and YZ dimensions of Z-stack with linked zoom and positioning between original and deconvolved preview and supporting running deconvolution on a crop, allowing you to see the result of a parameter change (usually) in seconds.
 - Visualization of point-spread functions, allowing you to see the effect of changing a parameter on the point-spread function.
-- Optional median or gaussian filters after deconvolution to smoothen out residual noise.
+- Optional post-processing filters to smoothen out residual noise.
 - Batch processing. 
 - Intuitive GUI with all dependencies bundled.
 - Open source.
