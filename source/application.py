@@ -13,12 +13,13 @@ import sys
 import tempfile
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 import h5py
 
-from app_version import __version__
+from app_version import __version__, APP_NAME, AUTHOR, REPOSITORY_URL
 from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST, contrast_range
 from source.channel_metadata import read_channels, text
 from source.edit_ims_channels import NAMED_COLORS
@@ -83,7 +84,6 @@ class Application:
         self.view_threads = []
         self.locked_widgets = {}
         self.source = tk.StringVar(value='internal')
-        self.separate = tk.BooleanVar(value=False)
         self.export_enabled = tk.BooleanVar(value=False)
         self.export_folder = tk.StringVar()
         self.import_display = tk.StringVar()
@@ -114,7 +114,8 @@ class Application:
 
     def build(self):
         w = self.window
-        w.title(f'Batch Deconvolution {__version__} — Richardson-Lucy and Gibson-Lanni')
+        w.title(f'{APP_NAME} {__version__} — Richardson-Lucy and Gibson-Lanni')
+        self.build_menu()
         w.geometry(f'{min(1700,(w.winfo_screenwidth() or 1760)-60)}x{min(1000,(w.winfo_screenheight() or 1100)-100)}')
         w.minsize(1100,700)
         workspace = tk.Frame(w, background=workspace_background(w))
@@ -180,12 +181,9 @@ class Application:
         ttk.Label(self.export_row,text='Export folder').pack(side='left',padx=(0,8))
         ttk.Entry(self.export_row,textvariable=self.export_folder,width=1).pack(side='left',fill='x',expand=True)
         ttk.Button(self.export_row,text='Browse…',command=self.browse_export).pack(side='left',padx=4)
-        self.actual_check = ttk.Checkbutton(self.internal,text='Separate objective design and actual imaging conditions',
-                                           variable=self.separate,command=self.actual_changed)
-        self.actual_check.pack(anchor='w',pady=4)
-        scale = ttk.Frame(self.internal)
+        scale = self.psf_scale = ttk.Frame(self.internal)
         scale.pack(fill='x')
-        self.settings_packed_rows = [radios,self.external,export_check,self.export_row,self.actual_check]
+        self.settings_packed_rows = [radios,self.external,export_check,self.export_row]
         for row,setting in enumerate(GENERATOR_FIELDS[:3]):
             self.field(scale,'PSF generation',row,*setting)
         self.optics = self.group('PSF optical settings')
@@ -199,12 +197,10 @@ class Application:
                 check.pack(side='left',padx=(4,0))
                 self.auto_spacing_vars[name] = var
                 self.auto_spacing_widgets[name] = check
-        self.pair_widgets = []
         offset = len(GENERATOR_FIELDS)-3
         for index,(design,actual,label,default) in enumerate(PAIRS):
-            caption,_ = self.field(self.optics,'PSF generation',offset+index*2,design,label,default,float)
-            widgets = self.field(self.optics,'PSF generation',offset+index*2+1,actual,label+' (actual)',default,float)
-            self.pair_widgets.append((caption,widgets,label))
+            self.field(self.optics,'PSF generation',offset+index*2,design,label+' (design)',default,float)
+            self.field(self.optics,'PSF generation',offset+index*2+1,actual,label+' (actual)',default,float)
         self.definition_panel = ttk.Frame(self.optics)
         self.definition_panel.grid(row=offset+len(PAIRS)*2,column=0,columnspan=2,sticky='ew',pady=(1,8))
         self.deconvolution = self.group('Deconvolution')
@@ -250,6 +246,42 @@ class Application:
         right.bind('<Configure>',self.schedule_viewer_layout,add='+')
         self.schedule_viewer_layout()
         self.export_folder.trace_add('write',lambda *args:self.save_settings())
+
+    def build_menu(self):
+        menu = tk.Menu(self.window)
+        if sys.platform == 'darwin':
+            app_menu = tk.Menu(menu, name='apple', tearoff=False)
+            app_menu.add_command(label=f'About {APP_NAME}', command=self.show_about)
+            menu.add_cascade(label=APP_NAME, menu=app_menu)
+            self.window.createcommand('tk::mac::ShowAbout', self.show_about)
+        help_menu = tk.Menu(menu, name='help', tearoff=False)
+        help_menu.add_command(label=f'{APP_NAME} on GitHub', command=self.open_github)
+        if sys.platform != 'darwin':
+            help_menu.add_separator()
+            help_menu.add_command(label=f'About {APP_NAME}', command=self.show_about)
+        menu.add_cascade(label='Help', menu=help_menu)
+        self.window.configure(menu=menu)
+        self.menu = menu
+
+    def open_github(self):
+        if not webbrowser.open(REPOSITORY_URL):
+            messagebox.showinfo('GitHub', REPOSITORY_URL, parent=self.window)
+
+    def show_about(self):
+        if sys.platform == 'darwin':
+            from AppKit import NSApplication, NSAttributedString
+            NSApplication.sharedApplication().orderFrontStandardAboutPanelWithOptions_({
+                'ApplicationName': APP_NAME,
+                'ApplicationVersion': __version__,
+                'Version': '',
+                'Credits': NSAttributedString.alloc().initWithString_(
+                    f'Created by {AUTHOR}\nBatch deconvolution for microscopy\n{REPOSITORY_URL}'),
+            })
+        else:
+            messagebox.showinfo(f'About {APP_NAME}',
+                                f'{APP_NAME}\nVersion {__version__}\n\nCreated by {AUTHOR}\n'
+                                f'Batch deconvolution for microscopy\n\n{REPOSITORY_URL}',
+                                parent=self.window)
 
     def schedule_viewer_layout(self,event=None):
         if self.viewer_layout_job is None:
@@ -405,20 +437,12 @@ class Application:
             self.optics.pack(fill='x',pady=(0,8),before=self.deconvolution)
         self.export_row.pack_forget()
         if self.export_enabled.get():
-            self.export_row.pack(fill='x',pady=4,before=self.actual_check)
-        for caption,widgets,label in self.pair_widgets:
-            caption.configure(text=label+(' (design)' if self.separate.get() else ''))
-            for widget in widgets:
-                widget.grid() if self.separate.get() else widget.grid_remove()
+            self.export_row.pack(fill='x',pady=4,before=self.psf_scale)
 
     def source_changed(self):
         self.show_source()
         self.render_external_channels()
         self.render_channels()
-        self.invalidate(psf=True)
-
-    def actual_changed(self):
-        self.show_source()
         self.invalidate(psf=True)
 
     def export_changed(self):
@@ -735,6 +759,8 @@ class Application:
             def changed(*args,key=key,name=name,color=color,iterations=iterations,regularization=regularization):
                 old = dict(self.preferences[key])
                 self.preferences[key].update(name=name.get(),color=color.get(),iterations=iterations.get(),regularization=regularization.get())
+                if old.get('name')!=name.get():
+                    self.render_post_processing()
                 processing_changed = any(old.get(k)!=self.preferences[key].get(k) for k in ('iterations','name','regularization'))
                 self.preview.recolor()
                 self.psf_view.draw()
@@ -748,31 +774,33 @@ class Application:
         for widget in self.post_panel.winfo_children():
             widget.destroy()
         self.post_vars.clear()
-        for col,label in enumerate(('Channel','New channel name','Filter','Kernel (X×Y×Z voxels)')):
+        for col,label in enumerate(('Channel','Filter','Kernel (X×Y×Z voxels)')):
             ttk.Label(self.post_panel,text=label).grid(row=0,column=col,sticky='w',padx=3)
         self.post_panel.columnconfigure(1,weight=1)
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
             pref = self.preferences[key]
-            name = tk.StringVar(value=pref.get('post_name',pref['name']))
-            method = tk.StringVar(value=pref.get('post_filter','None'))
+            post_enabled = tk.BooleanVar(value=pref.get('post_enabled',pref.get('post_filter','None')!='None'))
+            method = tk.StringVar(value=pref.get('post_filter','None') if pref.get('post_filter','None')!='None' else 'Median filter')
             kernel = tk.StringVar(value=kernel_label(pref.get('post_kernel',3)))
-            ttk.Label(self.post_panel,text=f"C{channel['index']+1}").grid(row=row,column=0,sticky='w')
-            entry = ttk.Entry(self.post_panel,textvariable=name,width=8)
-            choice = ttk.Combobox(self.post_panel,textvariable=method,values=('None','Median filter'),state='readonly',width=12)
-            size = ttk.Combobox(self.post_panel,textvariable=kernel,values=MEDIAN_KERNELS,state='readonly',width=7)
+            input_cell = ttk.Frame(self.post_panel)
+            input_cell.grid(row=row,column=0,sticky='w',padx=3)
             enabled = pref.get('enabled',True)
-            for col,widget in enumerate((entry,choice,size),1):
+            ttk.Checkbutton(input_cell,variable=post_enabled,state='normal' if enabled else 'disabled').pack(side='left')
+            ttk.Label(input_cell,text=f"C{channel['index']+1}: {pref['name'].strip()}",wraplength=160).pack(side='left')
+            choice = ttk.Combobox(self.post_panel,textvariable=method,values=('Median filter',),state='readonly',width=12)
+            size = ttk.Combobox(self.post_panel,textvariable=kernel,values=MEDIAN_KERNELS,state='readonly',width=7)
+            for col,widget in enumerate((choice,size),1):
                 widget.grid(row=row,column=col,sticky='ew',padx=3,pady=3)
-                widget.configure(state=('normal' if col==1 else 'readonly') if enabled else 'disabled')
-            size.configure(state='readonly' if enabled and method.get()=='Median filter' else 'disabled')
-            def changed(*args,key=key,name=name,method=method,kernel=kernel,size=size,enabled=enabled):
-                self.preferences[key].update(post_name=name.get(),post_filter=method.get(),post_kernel=kernel.get())
-                size.configure(state='readonly' if enabled and method.get()=='Median filter' else 'disabled')
+                widget.configure(state='readonly' if enabled and post_enabled.get() else 'disabled')
+            def changed(*args,key=key,post_enabled=post_enabled,method=method,kernel=kernel,choice=choice,size=size,enabled=enabled):
+                self.preferences[key].update(post_enabled=post_enabled.get(),post_filter=method.get(),post_kernel=kernel.get())
+                for widget in (choice,size):
+                    widget.configure(state='readonly' if enabled and post_enabled.get() else 'disabled')
                 self.invalidate(preview=True,post_processing=True)
-            for var in (name,method,kernel):
+            for var in (post_enabled,method,kernel):
                 var.trace_add('write',changed)
-            self.post_vars[key] = (name,method,kernel)
+            self.post_vars[key] = (post_enabled,method,kernel)
 
     def read_field(self,group,name):
         var,kind,label = self.fields[group][name]
@@ -792,11 +820,7 @@ class Application:
     def generator_settings(self):
         if not self.active_channels:
             raise ValueError('Select a Z-stack with readable channel metadata.')
-        hidden = {a for _,a,_,_ in PAIRS} if not self.separate.get() else set()
-        settings = {name:self.read_field('PSF generation',name) for name in self.fields['PSF generation'] if name not in hidden}
-        if not self.separate.get():
-            for design,actual,_,_ in PAIRS:
-                settings[actual] = settings[design]
+        settings = {name:self.read_field('PSF generation',name) for name in self.fields['PSF generation']}
         settings['SCAN_DIRECTION'] = settings['SCAN_DIRECTION'].lower()
         if settings['SCAN_DIRECTION'] not in ('up','down'):
             raise ValueError('Select Up or Down for axial scan direction.')
@@ -873,8 +897,9 @@ class Application:
                 raise ValueError(f'Enter non-negative regularization for C{index+1}.') from None
             settings['CHANNEL_REGULARIZATION'][str(index)] = regularization
             name = pref['name'].strip()
-            name = pref.get('post_name',name).strip()
             method = pref.get('post_filter','None')
+            if not pref.get('post_enabled',method!='None'):
+                method = 'None'
             kernel = kernel_label(pref.get('post_kernel',3))
             if method not in ('None','Median filter'):
                 raise ValueError(f'Select a valid filter and kernel for C{index+1}.')
@@ -1262,7 +1287,6 @@ class Application:
         config = configparser.ConfigParser(interpolation=None)
         for group,entries in self.fields.items():
             config[group] = {name:str(var.get()) for name,(var,_,_) in entries.items()}
-        config['PSF generation']['separate_design_actual'] = str(self.separate.get())
         for name,var in self.auto_spacing_vars.items():
             config['PSF generation'][name+'_auto'] = str(var.get())
         config['PSF generation']['channel_rows'] = json.dumps(self.definitions)
@@ -1302,7 +1326,10 @@ class Application:
             self.refresh_external()
             self.export_enabled.set(config.getboolean('PSF export','enabled',fallback=False))
             self.export_folder.set(config.get('PSF export','folder',fallback=''))
-            self.separate.set(config.getboolean('PSF generation','separate_design_actual',fallback=False))
+            # Preserve the effective values of older configurations with linked conditions.
+            if config.has_option('PSF generation','separate_design_actual') and not config.getboolean('PSF generation','separate_design_actual'):
+                for design,actual,_,_ in PAIRS:
+                    self.fields['PSF generation'][actual][0].set(self.fields['PSF generation'][design][0].get())
             for name,var in self.auto_spacing_vars.items():
                 var.set(config.getboolean('PSF generation',name+'_auto',fallback=False))
             if config.has_option('PSF generation','channel_rows'):
@@ -1350,7 +1377,6 @@ class Application:
         self.imported_files = []
         self.refresh_external()
         self.source.set('internal')
-        self.separate.set(False)
         self.export_enabled.set(False)
         self.export_folder.set('')
         self.loading = False

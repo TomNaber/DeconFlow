@@ -48,7 +48,7 @@ def main():
     java_home = java.parent.parent.relative_to(prefix)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    name = f'Batch-Deconvolution-{__version__}-{args.platform}-{arch}'
+    name = f'DeconFlow-{__version__}-{args.platform}-{arch}'
     archive = output / f'{name}.zip'
     checksum = output / f'{name}.zip.sha256'
     installer = output / (f'{name}.dmg' if args.platform == 'macos' else f'{name}-Setup.exe')
@@ -56,7 +56,7 @@ def main():
         parser.error(f'Release output already exists: {archive}. Move it or use --output.')
     with tempfile.TemporaryDirectory(prefix='batch-release-') as staging:
         stage = Path(staging)
-        bundle = stage / ('Batch Deconvolution.app' if args.platform == 'macos' else name)
+        bundle = stage / ('DeconFlow.app' if args.platform == 'macos' else name)
         resources = bundle / 'Contents/Resources' if args.platform == 'macos' else bundle
         app = resources / 'app'
         app.mkdir(parents=True)
@@ -80,14 +80,14 @@ def main():
         launcher = template.read_text().replace('@BUILD_ID@', build_id)
         launcher = launcher.replace('@JAVA_HOME@', str(java_home))
         if args.platform == 'macos':
-            executable = bundle / 'Contents/MacOS/Batch Deconvolution'
+            executable = bundle / 'Contents/MacOS/DeconFlow'
             executable.parent.mkdir(parents=True)
             executable.write_text(launcher)
             executable.chmod(0o755)
             with (bundle / 'Contents/Info.plist').open('wb') as stream:
                 plistlib.dump({
-                    'CFBundleName': 'Batch Deconvolution',
-                    'CFBundleDisplayName': 'Batch Deconvolution',
+                    'CFBundleName': 'DeconFlow',
+                    'CFBundleDisplayName': 'DeconFlow',
                     'CFBundleIdentifier': 'org.batch-deconvolution.app',
                     'CFBundleExecutable': executable.name,
                     'CFBundlePackageType': 'APPL',
@@ -114,7 +114,7 @@ def main():
                 disk.mkdir()
                 subprocess.run(['ditto', str(bundle), str(disk / bundle.name)], check=True)
                 (disk / 'Applications').symlink_to('/Applications')
-                subprocess.run(['hdiutil', 'create', '-volname', f'Batch Deconvolution {__version__}',
+                subprocess.run(['hdiutil', 'create', '-volname', f'DeconFlow {__version__}',
                                 '-srcfolder', str(disk), '-format', 'UDZO', str(installer)], check=True)
             else:
                 compiler = shutil.which('ISCC.exe')
