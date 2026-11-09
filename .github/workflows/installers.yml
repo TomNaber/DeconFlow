@@ -1,12 +1,10 @@
-name: Stage release candidate
+name: Build installers
 
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/stage-1.0.0rc1]
 
 concurrency:
-  group: stage-rc1-${{ github.ref }}
+  group: build-installers-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -70,49 +68,3 @@ jobs:
           name: setup-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
-
-  stage:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: setup-*
-          path: dist
-          merge-multiple: true
-      - name: Stage draft prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          version=$(python -c 'from app_version import __version__; print(__version__)')
-          cd dist
-          sha256sum --check *.sha256
-          cd ..
-          tag="v$version"
-          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases")
-          if jq -e --arg tag "$tag" 'any(.[]; .tag_name == $tag and .draft == false)' <<<"$releases" >/dev/null; then
-            echo "Refusing to replace a published release: $tag" >&2
-            exit 1
-          fi
-          release_id=$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag and .draft)] | sort_by(.created_at) | last | .id // empty' <<<"$releases")
-          if [ -z "$release_id" ]; then
-            gh release create "$tag" dist/* --target "$GITHUB_SHA" --draft --prerelease --title "1.0.0 RC1" --notes-file docs/releases/1.0.0rc1.md
-          else
-            # Address the exact draft: old RC runs may have created duplicate draft tags.
-            for asset in dist/*; do
-              name=$(basename "$asset")
-              asset_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq ".[] | select(.name == \"$name\") | .id")
-              if [ -n "$asset_id" ]; then
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-              fi
-              gh api --method POST "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$name" \
-                -H 'Content-Type: application/octet-stream' --input "$asset" --silent
-            done
-            jq -n --arg tag "$tag" --arg target "$GITHUB_SHA" --rawfile body docs/releases/1.0.0rc1.md \
-              '{tag_name: $tag, target_commitish: $target, body: $body, draft: true, prerelease: true}' > release-update.json
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input release-update.json --silent
-          fi
