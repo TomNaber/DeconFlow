@@ -43,8 +43,8 @@ Python, Java, and ImageJ are included.
 Install [Miniforge](https://github.com/conda-forge/miniforge), then run:
 
 ```sh
-git clone https://github.com/TomNaber/Imaris-Batch-Deconvolution.git
-cd Imaris-Batch-Deconvolution
+git clone https://github.com/TomNaber/DeconFlow.git
+cd DeconFlow
 conda env create -f environment.yml
 conda activate batch-deconvolution
 python scripts/setup_imagej.py
