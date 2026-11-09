@@ -39,6 +39,8 @@ class ContrastSlider(tk.Canvas):
         self.low, self.high = limits
         self.increment = 0.5 / (self.high - self.low)
         self.values = NEUTRAL_CONTRAST
+        # Keep data normalization fixed while allowing the slider track to expand.
+        self.maximum = 1.0
         self.active = 1
         self.bind('<Configure>', self.draw)
         self.bind('<Button-1>', self.press)
@@ -53,21 +55,23 @@ class ContrastSlider(tk.Canvas):
         width = max(1, self.winfo_width() - 20)
         self.create_line(10, 12, 10 + width, 12, fill='#888888', width=3)
         for index, (value, color) in enumerate(zip(self.values, ('#222222', '#999999', '#ffffff'))):
-            x = 10 + value * width
+            x = 10 + value / self.maximum * width
             self.create_oval(x - 6, 6, x + 6, 18,
                                 fill=color, outline='#3984d6' if index == self.active else '#666666',
                                 width=2)
 
     def set(self, values):
         self.values = values
+        self.maximum = max(self.maximum, values[2])
         self.draw()
 
-    def move(self, value):
+    def move(self, value, *, extend=False):
         black, midpoint, white = self.values
         fraction = (midpoint - black) / (white - black)
         gap = 1e-6
+        maximum = max(self.maximum, value) if extend and self.active == 2 else self.maximum
         lower, upper = ((0.0, white - gap) if self.active == 0 else
-                        (black + gap, 1.0) if self.active == 2 else
+                        (black + gap, maximum) if self.active == 2 else
                         (black + (white - black) * gap, white - (white - black) * gap))
         span = self.high - self.low
         first_bin = math.ceil((self.low + lower * span) * 2)
@@ -81,7 +85,7 @@ class ContrastSlider(tk.Canvas):
             black = min(white - gap, max(0.0, value))
             midpoint = black + fraction * (white - black)
         elif self.active == 2:
-            white = max(black + gap, min(1.0, value))
+            white = max(black + gap, min(maximum, value))
             midpoint = black + fraction * (white - black)
         else:
             margin = (white - black) * gap
@@ -95,17 +99,17 @@ class ContrastSlider(tk.Canvas):
     def press(self, event):
         self.focus_set()
         width = max(1, self.winfo_width() - 20)
-        position = (event.x - 10) / width
+        position = (event.x - 10) / width * self.maximum
         self.active = min(range(3), key=lambda i: abs(self.values[i] - position))
         # Grabbing a handle should not shift it before the pointer moves.
         self.drag_offset = self.values[self.active] - position
-        if abs(self.drag_offset * width) > 8:
+        if abs(self.drag_offset / self.maximum * width) > 8:
             self.drag_offset = 0.0
             self.move(position)
         self.draw()
 
     def drag(self, event):
-        self.move((event.x - 10) / max(1, self.winfo_width() - 20) + self.drag_offset)
+        self.move((event.x - 10) / max(1, self.winfo_width() - 20) * self.maximum + self.drag_offset)
 
     def step(self, delta):
         self.move(self.values[self.active] + delta)
@@ -207,7 +211,7 @@ class ChannelAdjustment(ttk.Notebook):
                 entries[index].set(format_intensity(low + slider.values[index] * (high - low)))
                 return
             slider.active = index
-            slider.move(value)
+            slider.move(value, extend=index == 2)
             entries[index].set(format_intensity(low + slider.values[index] * (high - low)))
 
         for point_index, column in ((0, 1), (2, 3), (1, 4)):
@@ -215,6 +219,10 @@ class ChannelAdjustment(ttk.Notebook):
             entry.grid(row=row, column=column, padx=2, pady=1)
             entry.bind('<Return>', lambda event, i=point_index: commit(i))
             entry.bind('<FocusOut>', lambda event, i=point_index: commit(i))
-        ResetButton(self.table, lambda: set_value(NEUTRAL_CONTRAST)).grid(
+        def reset():
+            slider.maximum = 1.0
+            set_value(NEUTRAL_CONTRAST)
+
+        ResetButton(self.table, reset).grid(
             row=row, column=5, padx=(4, 0))
         return visible, slider, entries
