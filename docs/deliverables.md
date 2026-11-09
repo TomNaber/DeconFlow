@@ -2,7 +2,7 @@
 
 The version lives in `app_version.py`. Update it before building a release; it
 appears in the window title, `python main.py --version`, archive names, and the
-macOS bundle metadata. The staged candidate is 1.0.0rc1. Native installer metadata uses numeric versions.
+macOS bundle metadata. Native installer metadata uses numeric versions.
 
 Build on each target OS and architecture: Apple Silicon macOS 14+, Intel macOS
 13+, and Windows x64. These minimums reflect the pinned CLIJ2-FFT native binaries
@@ -84,15 +84,6 @@ does not validate the target machine's GPU/OpenCL setup. Java is bundled from
 the build environment; ImageJ artifact versions are fixed by the manifest.
 Any manifest upgrade must repeat numerical, lifecycle, and native-platform
 validation before release.
-
-## Staging RC1
-
-Push the RC commit to `codex/release-1.0.0rc1`, or run the **Stage release candidate**
-workflow manually from the release commit.
-It builds on native Apple Silicon, Intel, and Windows runners, checks relocated
-launchers, uploads artifacts, and creates a **draft prerelease** only after all
-three builds succeed. It never publishes automatically. Existing release tags
-are not overwritten. Complete native GPU acceptance before publishing.
 
 ## Optional post-processing
 
