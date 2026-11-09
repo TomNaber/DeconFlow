@@ -11,8 +11,9 @@ Why do we need another deconvolution app? Because we want all of the following a
 - Optional median or gaussian filters after deconvolution to smoothen out residual noise.
 - Batch processing. 
 - Intuitive GUI with all dependencies bundled.
+- Open source.
 
-This app uses the [psfmodels] (https://github.com/tlambert03/PSFmodels) plugin to generate Gibson-Lanni point-spread functions. A minimal headless ImageJ installation with [CLIJ2] (https://github.com/clij/clij2/) is bundled and integrated for GPU-accelerated Richardson-Lucy deconvolution with non-circulant edge detection and total variation regularization.
+This app uses the [psfmodels](https://github.com/tlambert03/PSFmodels) plugin to generate Gibson-Lanni point-spread functions. A minimal headless ImageJ installation with [CLIJ2](https://github.com/clij/clij2/) is bundled and integrated for GPU-accelerated Richardson-Lucy deconvolution with non-circulant edge detection and total variation regularization.
 
 ## Usage
 
