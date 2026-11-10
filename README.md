@@ -38,6 +38,10 @@ Download the setup for your platform from [Releases](https://github.com/TomNaber
 
 Python, Java, and ImageJ are included.
 
+## Citation
+
+If you use this app, please cite DeconFlow using GitHub’s **Cite this repository** option to generate a citation in APA or BibTeX format, or see [CITATION.cff](CITATION.cff).
+
 ## Dev install
 
 Install [Miniforge](https://github.com/conda-forge/miniforge), then run:

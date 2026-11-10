@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this app, please cite it using the metadata in this file."
+type: software
+title: DeconFlow
+authors:
+  - family-names: Naber
+    given-names: Tom
+repository-code: "https://github.com/TomNaber/Imaris-Batch-Deconvolution"
+license: MIT
