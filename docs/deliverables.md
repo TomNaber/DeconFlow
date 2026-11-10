@@ -74,3 +74,40 @@ These installers are unsigned and not notarized. GPU processing requires a
 working OpenCL driver. Build and launcher checks do not replace native-platform
 checks of GUI startup, PSF generation, preview, and IMS export. See
 [platform verification](platform-verification.md).
+
+
+## Updates and draft releases
+
+Installed copies check the latest published stable GitHub release in the background
+on startup. Newer versions prompt before downloading. Downloads must match the
+platform, CPU architecture, asset size, and SHA-256 sidecar. Declining leaves the
+current installation untouched; network errors are logged without blocking startup.
+Source checkouts are not automatically replaced.
+
+After consent, the app waits for active processing/export work, saves settings,
+downloads the installer, and exits normally. A detached helper waits for the app
+process to exit before installing and relaunching. Windows runs Inno Setup silently
+against the current installation directory. macOS mounts the DMG, stages the new
+bundle beside the current bundle, and replaces it with rollback on replacement or
+launch-command failure. The installation and its parent must be writable; apps
+running from the DMG need to be copied to Applications first. OS signing/security
+prompts may still require user action. The helper cannot verify successful GUI
+startup after the launch command returns.
+
+Update failure details remain in the `deconflow-update-*` temporary directory,
+including `update.log` and, on Windows, `installer.log`. Successful downloads are
+removed after installation. Preferences, user data, and runtime caches are outside
+the replaced application.
+
+Private GitHub repositories require the `DECONFLOW_GITHUB_TOKEN` environment
+variable in the app's launch environment, using a token with read-only Contents
+access to this repository. Finder launches do not normally inherit terminal shell
+environment variables. Tokens are never included in installers. Public repositories
+need no token. A missing/inaccessible release does not interrupt startup.
+
+Run the **Build installers** GitHub Actions workflow manually, or push a `vX.Y.Z`
+tag matching `app_version.py`. After all three native builds and launcher checks
+pass, the workflow uploads the installers and checksums to a **draft** GitHub
+release. It refuses to overwrite a published release. Review the draft and publish
+it to make it visible to update checks. Increment the version for subsequent
+releases; the initial version is `1.0.0`.

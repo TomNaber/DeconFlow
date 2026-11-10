@@ -131,10 +131,12 @@ class Application:
         self.window.protocol('WM_DELETE_WINDOW', self.close)
         self.poll_job = self.window.after(100, self.poll)
         self.update_activity()
+        from source.app_updates import UpdateController
+        self.updater = UpdateController(self)
 
     def build(self):
         w = self.window
-        w.title(f'{APP_NAME} {__version__} — Richardson-Lucy and Gibson-Lanni')
+        w.title(f'{APP_NAME} {__version__}')
         self.build_menu()
         w.geometry(f'{min(1700,(w.winfo_screenwidth() or 1760)-60)}x{min(1000,(w.winfo_screenheight() or 1100)-100)}')
         w.minsize(1100,700)

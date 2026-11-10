@@ -2,6 +2,8 @@ name: Build installers
 
 on:
   workflow_dispatch:
+  push:
+    tags: ['v*']
 
 concurrency:
   group: build-installers-${{ github.ref }}
@@ -11,7 +13,33 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'PYTHON'
+          import os, re
+          from app_version import __version__, NATIVE_VERSION, BUILD_VERSION
+          assert re.fullmatch(r'\d+\.\d+\.\d+', __version__)
+          assert NATIVE_VERSION == __version__
+          assert BUILD_VERSION == __version__ + '.0'
+          tag = 'v' + __version__
+          if os.environ['REF_TYPE'] == 'tag':
+              assert os.environ['REF_NAME'] == tag, 'Git tag must match app_version.py'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\n')
+          PYTHON
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -75,3 +103,47 @@ jobs:
             dist/*.dmg.sha256
             dist/*-Setup.exe.sha256
           if-no-files-found: error
+
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: draft-release-${{ needs.version.outputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: setup-*
+          path: dist
+          merge-multiple: true
+      - name: Verify all release assets
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          python - <<'PYTHON'
+          import hashlib, os
+          from pathlib import Path
+          version = os.environ['RELEASE_TAG'][1:]
+          for suffix in ('macos-arm64.dmg', 'macos-x86_64.dmg', 'windows-x86_64-Setup.exe'):
+              path = Path('dist') / f'DeconFlow-{version}-{suffix}'
+              expected = Path(str(path) + '.sha256').read_text().split()[0]
+              with path.open('rb') as stream:
+                  assert hashlib.file_digest(stream, 'sha256').hexdigest() == expected, path
+          PYTHON
+      - name: Stage draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json 2>/dev/null; then
+            python -c "import json; assert json.load(open('release.json'))['isDraft'], 'Refusing to modify a published release'"
+          else
+            gh release create "$RELEASE_TAG" --draft --target "$RELEASE_COMMIT" --title "DeconFlow $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
