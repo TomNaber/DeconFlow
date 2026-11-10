@@ -79,7 +79,10 @@ def latest_release():
 def download(release, directory):
     _, asset, checksum = release
     with fetch(checksum['url'], binary=True) as response:
-        expected = response.read(4096).decode().split()[0].lower()
+        tokens = response.read(4096).decode().split()
+    if not tokens:
+        raise ValueError('Invalid release checksum.')
+    expected = tokens[0].lower()
     if not re.fullmatch('[a-f0-9]{64}', expected):
         raise ValueError('Invalid release checksum.')
     target = directory / asset['name']
