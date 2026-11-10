@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app_version import __version__, NATIVE_VERSION, BUILD_VERSION
 from scripts.setup_imagej import install as install_imagej
+from scripts.minimal_runtime import build_runtime
 from source.imagej_runtime import manifest as imagej_manifest, java_executable
 
 
@@ -21,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--platform', choices=('macos', 'windows'), required=True)
     parser.add_argument('--output', type=Path, default=ROOT / 'dist')
-    parser.add_argument('--installer', action='store_true', help='Also build a macOS DMG or Windows Setup.exe (requires Inno Setup 6).')
+    parser.add_argument('--installer', action='store_true', help=argparse.SUPPRESS)  # Backward-compatible; always installer-only.
     args = parser.parse_args()
     expected = 'Darwin' if args.platform == 'macos' else 'Windows'
     if platform.system() != expected:
@@ -49,11 +50,9 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     name = f'DeconFlow-{__version__}-{args.platform}-{arch}'
-    archive = output / f'{name}.zip'
-    checksum = output / f'{name}.zip.sha256'
     installer = output / (f'{name}.dmg' if args.platform == 'macos' else f'{name}-Setup.exe')
-    if archive.exists() or checksum.exists() or (args.installer and installer.exists()):
-        parser.error(f'Release output already exists: {archive}. Move it or use --output.')
+    if installer.exists() or installer.with_suffix(installer.suffix + '.sha256').exists():
+        parser.error(f'Installer already exists: {installer}. Move it or use --output.')
     with tempfile.TemporaryDirectory(prefix='batch-release-') as staging:
         stage = Path(staging)
         bundle = stage / ('DeconFlow.app' if args.platform == 'macos' else name)
@@ -64,14 +63,15 @@ def main():
             shutil.copy2(ROOT / filename, app / filename)
         shutil.copytree(ROOT / 'source', app / 'source',
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store'))
-        shutil.copytree(ROOT / 'docs', app / 'docs')
+        shutil.copytree(ROOT / 'docs', app / 'docs',
+                        ignore=shutil.ignore_patterns('assets', 'images', '.DS_Store'))
         shutil.copytree(imagej, app / 'runtime/imagej')
         shutil.copytree(imagej.parent / 'bioformats', app / 'runtime/bioformats')
         # Preserve native dependency notices without distributing unused wheels.
         shutil.copytree(ROOT / 'vendor', app / 'vendor',
                         ignore=shutil.ignore_patterns('*.whl', '__pycache__', '*.pyc', '.DS_Store'))
         runtime = resources / ('runtime.tar.gz' if args.platform == 'macos' else 'runtime.zip')
-        conda_pack.pack(prefix=str(prefix), output=str(runtime), verbose=True)
+        build_runtime(prefix, java_home, runtime, stage, app, imagej)
         # Content-addressed caches allow the app itself to move after first launch.
         with runtime.open('rb') as stream:
             build_id = f'{__version__}-{arch}-{hashlib.file_digest(stream, "sha256").hexdigest()[:16]}'
@@ -101,38 +101,26 @@ def main():
             (bundle / 'Launch.cmd').write_bytes(
                 b'@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Launch.ps1" %*\r\n')
         shutil.copy2(ROOT / 'docs/deliverables.md', bundle / 'READ-ME.md')
-        temporary_archive = stage / 'release.zip'
         if args.platform == 'macos':
-            subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent',
-                            str(bundle), str(temporary_archive)], check=True)
+            disk = stage / 'disk'
+            disk.mkdir()
+            shutil.move(str(bundle), disk / bundle.name)
+            (disk / 'Applications').symlink_to('/Applications')
+            subprocess.run(['hdiutil', 'create', '-volname', f'DeconFlow {__version__}',
+                            '-srcfolder', str(disk), '-format', 'UDZO', str(installer)], check=True)
         else:
-            shutil.make_archive(str(stage / 'release'), 'zip', stage, bundle.name)
-        shutil.move(str(temporary_archive), archive)
-        if args.installer:
-            if args.platform == 'macos':
-                disk = stage / 'disk'
-                disk.mkdir()
-                subprocess.run(['ditto', str(bundle), str(disk / bundle.name)], check=True)
-                (disk / 'Applications').symlink_to('/Applications')
-                subprocess.run(['hdiutil', 'create', '-volname', f'DeconFlow {__version__}',
-                                '-srcfolder', str(disk), '-format', 'UDZO', str(installer)], check=True)
-            else:
-                compiler = shutil.which('ISCC.exe')
-                if compiler is None:
-                    compiler = str(Path('C:/Program Files (x86)/Inno Setup 6/ISCC.exe'))
-                subprocess.run([compiler, f'/DAppVersion={__version__}',
-                                f'/DNativeVersion={BUILD_VERSION}', f'/DSourceDir={bundle}',
-                                f'/DOutputDir={output}', f'/DOutputName={installer.stem}',
-                                str(ROOT / 'scripts/packaging/windows.iss')], check=True)
-    with archive.open('rb') as stream:
-        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-    checksum.write_text(f'{digest}  {archive.name}\n')
-    if args.installer:
-        with installer.open('rb') as stream:
-            installer_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-        installer.with_suffix(installer.suffix + '.sha256').write_text(f'{installer_digest}  {installer.name}\n')
-        print(f'Created {installer}')
-    print(f'Created {archive}\nSHA-256: {digest}')
+            compiler = shutil.which('ISCC.exe')
+            if compiler is None:
+                compiler = str(Path('C:/Program Files (x86)/Inno Setup 6/ISCC.exe'))
+            subprocess.run([compiler, f'/DAppVersion={__version__}',
+                            f'/DNativeVersion={BUILD_VERSION}', f'/DSourceDir={bundle}',
+                            f'/DOutputDir={output}', f'/DOutputName={installer.stem}',
+                            str(ROOT / 'scripts/packaging/windows.iss')], check=True)
+    with installer.open('rb') as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    installer.with_suffix(installer.suffix + '.sha256').write_text(f'{digest}  {installer.name}\n')
+    print(f'Created {installer}\nSHA-256: {digest}')
+
 
 
 if __name__ == '__main__':

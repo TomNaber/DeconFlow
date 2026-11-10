@@ -34,7 +34,7 @@ jobs:
       - uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
-          activate-environment: batch-deconvolution
+          activate-environment: deconflow
           environment-file: environment.yml
           auto-activate-base: false
       - name: Install packaging dependency
@@ -43,13 +43,16 @@ jobs:
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: python -c "import os, platform; assert platform.machine().lower().replace('amd64', 'x86_64') == os.environ['EXPECTED_ARCH']"
-      - name: Build complete setup and portable archive
-        run: python scripts/build_deliverable.py --platform ${{ matrix.platform }} --installer
+      - name: Build installer
+        run: python scripts/build_deliverable.py --platform ${{ matrix.platform }}
       - name: Verify relocated macOS launcher
         if: runner.os == 'macOS'
         run: |
           mkdir -p "$RUNNER_TEMP/relocated app"
-          ditto -x -k dist/*.zip "$RUNNER_TEMP/relocated app"
+          mkdir -p "$RUNNER_TEMP/deconflow-dmg"
+          hdiutil attach dist/*.dmg -nobrowse -readonly -mountpoint "$RUNNER_TEMP/deconflow-dmg"
+          trap 'hdiutil detach "$RUNNER_TEMP/deconflow-dmg"' EXIT
+          ditto "$RUNNER_TEMP/deconflow-dmg/DeconFlow.app" "$RUNNER_TEMP/relocated app/DeconFlow.app"
           env -u PYTHONHOME -u PYTHONPATH -u JAVA_HOME -u CONDA_PREFIX PATH=/usr/bin:/bin:/usr/sbin:/sbin "$RUNNER_TEMP/relocated app/DeconFlow.app/Contents/MacOS/DeconFlow" --version
       - name: Verify Windows setup and relocated launcher
         if: runner.os == 'Windows'
@@ -66,5 +69,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: setup-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/*
+          path: |
+            dist/*.dmg
+            dist/*-Setup.exe
+            dist/*.dmg.sha256
+            dist/*-Setup.exe.sha256
           if-no-files-found: error

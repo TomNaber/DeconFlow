@@ -1,4 +1,4 @@
-name: batch-deconvolution
+name: deconflow
 channels:
   - conda-forge
   - nodefaults

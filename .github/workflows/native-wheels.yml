@@ -52,5 +52,5 @@ jobs:
         run: conda env create -f environment.yml
       - name: Check installed dependencies and native loading
         run: |
-          conda run -n batch-deconvolution python -m pip check
-          conda run -n batch-deconvolution python -c "import ctypes, platform, pathlib, napari_vipp_imaris, psfmodels, source.preview; p = pathlib.Path(napari_vipp_imaris.__file__).parent; ctypes.CDLL(str(p / ('bpImarisWriter96.dll' if platform.system() == 'Windows' else 'libbpImarisWriter96.dylib'))); print(platform.system(), platform.machine(), 'native imports loaded')"
+          conda run -n deconflow python -m pip check
+          conda run -n deconflow python -c "import ctypes, platform, pathlib, napari_vipp_imaris, psfmodels, source.preview; p = pathlib.Path(napari_vipp_imaris.__file__).parent; ctypes.CDLL(str(p / ('bpImarisWriter96.dll' if platform.system() == 'Windows' else 'libbpImarisWriter96.dylib'))); print(platform.system(), platform.machine(), 'native imports loaded')"

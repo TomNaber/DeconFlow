@@ -199,3 +199,46 @@ checks alone cannot establish GPU workflow compatibility.
 
 Verification used temporary commands and temporary data only. No project tests
 or test folders were created or modified.
+
+
+## Minimal installer — 9 November 2026
+
+Built and installed `dist/minimal-macos/DeconFlow-0.1.0-macos-arm64.dmg`
+into `/Applications/DeconFlow.app` from the actual mounted DMG. The development
+environment was created fresh as `deconflow` from `environment.yml`.
+
+- DMG: **249,577,401 bytes** (249.6 MB); output contains only the installer and
+  its SHA-256 checksum, with no portable application ZIP.
+- Full build environment file sizes before filtering: 862,721,520 bytes.
+- Filtered Python environment file sizes: 291,403,905 bytes.
+- Linked Java 21 runtime: 53,002,524 bytes.
+- Compressed combined Python/Java archive: 113,066,190 bytes.
+
+Java's compiler is used only during packaging. The installed app uses a compiled
+`HeadlessImageJ.class` and a `jlink` runtime without javac or JDK development
+files. Dependency tests, Python bytecode caches, headers, static libraries, pip,
+conda-pack and wheel code are excluded from the packaged environment. The full
+pinned headless ImageJ and Bio-Formats bundles remain intact: their checksums and
+native-library extraction behavior are unchanged. Jython and Bio-Formats are
+substantial remaining components; this is the reduced configuration verified
+with the current processing stack, not a claim of a theoretical minimum size.
+
+Verification used the installed app, an empty temporary HOME/cache, no external
+Python/Java/Conda on PATH, `PYTHONNOUSERSITE=1`, and `sandbox-exec` denying network
+access. Passed: first-launch runtime extraction, three-channel PSF generation,
+all four GPU numerical comparisons (regularization 0 and 0.0001, both boundary
+modes), three-channel preview with median filtering, batch IMS export and
+Bio-Formats readback, and GUI startup/close. All four numerical comparisons had
+zero maximum voxel error against the existing Fiji baseline on Apple M3 Pro.
+Normal Launch Services startup also ran the installed bundled Python runtime.
+
+The builder additionally checks that the linked Java runtime starts the compiled
+headless ImageJ/Jython entry point before creating an installer. SHA-256, archive
+exclusions, installer-only output, Python syntax and workflow YAML were checked.
+The Java module list and packaging exclusions are recorded in the installed
+`app/runtime/packaging.json`. Local verification output is in
+`/private/tmp/deconflow-installed-verification/result.json`.
+
+This smaller runtime has been exercised locally on Apple Silicon only. Windows
+and Intel macOS need their own builds and native checks. No release was created
+or published during this work.

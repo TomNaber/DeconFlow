@@ -1,96 +1,76 @@
-# Native deliverables
+# Native installers
 
-The version lives in `app_version.py`. Update it before building a release; it
-appears in the window title, `python main.py --version`, archive names, and the
-macOS bundle metadata. Native installer metadata uses numeric versions.
+The version lives in `app_version.py` and appears in the window title,
+`python main.py --version`, installer filenames, and native metadata.
 
 Build on each target OS and architecture: Apple Silicon macOS 14+, Intel macOS
-13+, and Windows x64. These minimums reflect the pinned CLIJ2-FFT native binaries
-and are also written into the macOS application metadata. Cross-compilation is not supported. Start with a clean environment
-from `environment.yml`, activate it, then install the packaging dependency:
+13+, or Windows x64 (Windows 10+). Cross-compilation is not supported.
 
 ```sh
 conda env create -f environment.yml
-conda activate batch-deconvolution
+conda activate deconflow
 python -m pip install -r requirements-build.txt
 ```
 
 On macOS:
 
 ```sh
-bash scripts/build_macos.sh --installer
+bash scripts/build_macos.sh
 ```
 
-On Windows, use PowerShell with the environment activated:
+On Windows:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 --installer
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
 ```
 
-Windows installer builds require Inno Setup 6 (available on the Windows CI runner).
-With `--installer`, builds also produce a macOS DMG or a per-user Windows Setup.exe
-and its SHA-256 checksum. Both accept `--output PATH` and write a versioned ZIP and SHA-256 file into
-`dist/` by default. Existing release files are never overwritten. Builds check
-installed dependencies, native imports, and Java before packaging. They also run
-`scripts/setup_imagej.py` to automatically provision Java 21 in the build
-environment and install/verify the pinned ImageJ and Bio-Formats runtimes, then copy them into
-the release app folder. Downloads are required only when locked artifacts are
-missing or corrupt. Dependency notices and the lock manifest are included. The complete
-active Conda environment is included, so build from a dedicated environment
-without private files or unrelated packages. See the
-[conda-pack documentation](https://conda.github.io/conda-pack/) for runtime
-relocation details.
+Windows builds require Inno Setup 6. Both builders accept `--output PATH` and
+produce only a DMG or Setup.exe plus its SHA-256 checksum. They never produce a
+portable application ZIP. Existing outputs are not overwritten. GitHub's artifact
+ZIP is just the download container for the installer and checksum.
 
-## Running a deliverable
+## Bundled runtime
 
-- macOS: open the DMG (or extract the ZIP), move `Batch Deconvolution.app` to Applications, and open it.
-- Windows: run Setup.exe and use the Start menu shortcut, or extract the entire
-  portable ZIP and double-click `Launch.cmd` inside its folder.
+Build from the dedicated `deconflow` environment. The builder verifies Python
+dependencies, native imports, and the locked ImageJ and Bio-Formats artifacts.
+It compiles the ImageJ Java entry point and uses `jlink` to create a Java 21
+runtime without development tools, headers, or manuals. The development JDK is
+not included in the installer. Java's desktop APIs remain necessary for ImageIO
+and headless AWT even though the ImageJ user interface is not used.
 
-Python, Tk, Java 21, Python dependencies, and the pinned headless ImageJ/CLIJ2
-runtime are bundled. Users do not need Conda or Fiji and do not select an
-executable. The ImageJ libraries live in `app/runtime/imagej/`; the exact artifact
-versions and hashes are in `app/source/imagej/runtime.json`. Startup verifies
-these hashes and never falls back to an external Fiji installation.
-Bio-Formats 8.5.0 and its dependencies are included as the official upstream
-bundle, verified against `app/source/bioformats/runtime.json`. Maven resolution
-and Java downloading are disabled during image reading. First launch and image
-processing work without internet access; no separate Java or Fiji installation
-is needed. The launcher verifies bundled Java before marking initial extraction
-complete.
-Input images and generated PSFs are not included; generate or select your PSFs.
+The Python runtime retains application dependencies and native libraries, but
+excludes dependency test data, bytecode caches, headers, static libraries,
+package installers, and build tools. Licenses and package metadata are retained.
+Filtering changes only the packaged files, never the development environment.
+The installer includes the pinned headless ImageJ/CLIJ2 and Bio-Formats JARs,
+verified against the bundled manifests. No Fiji or Maven installation is needed.
+`app/runtime/packaging.json` records the Java modules, exclusions, and build sizes.
 
-On first launch the runtime is extracted and relocated into the user's
-`Library/Application Support/Batch Deconvolution` folder on macOS or
-`%LOCALAPPDATA%\Batch Deconvolution` on Windows. Allow time and disk space for this
-one-time extraction. Each runtime archive has a separate cache; the app can be
-moved without moving its runtime. Old `runtime-*` cache directories can be
-removed when no app is using them. On macOS startup errors are written to
-`launcher.log` in that folder. If an interrupted macOS setup leaves a
-`runtime-*.lock` directory, remove it after confirming the app is closed and retry.
-Default data/output folders are under Documents/Batch Deconvolution, so the
-application bundle does not need to be writable. Existing saved settings still apply; obsolete Fiji executable paths are ignored.
-ImageJ native-library extraction uses the user cache (`Library/Caches/Batch
-Deconvolution` on macOS or `%LOCALAPPDATA%\Batch Deconvolution\cache` on Windows),
-and job files use temporary directories. The ImageJ app folder may be read-only.
-A missing or corrupt packaged ImageJ runtime requires reinstalling the release.
-Source installations can be repaired with `python scripts/setup_imagej.py`.
+## Installing and running
 
-These setups and portable archives are unsigned and are not notarized. macOS security
-policy may block downloaded builds until approved by the user or administrator.
-Before distributing a release, verify GUI startup, PSF generation, preview, and
-IMS export on a clean machine for each target architecture. A successful build
-does not validate the target machine's GPU/OpenCL setup. Java is bundled from
-the build environment; ImageJ artifact versions are fixed by the manifest.
-Any manifest upgrade must repeat numerical, lifecycle, and native-platform
-validation before release.
+- macOS: open the DMG and drag `DeconFlow.app` to Applications.
+- Windows: run Setup.exe and use the DeconFlow Start menu shortcut.
 
-## Optional post-processing
+Python, Tk, Java, and image-processing dependencies are included. First launch
+extracts and relocates the internal runtime archive into a user-writable cache.
+This internal archive is part of the installer, not a separate portable download.
+The app can move without moving its runtime, and its installation directory can
+be read-only. Runtime extraction verifies Java before marking the cache ready.
 
-The **Post-processing** group is always visible within Deconvolution, with per-channel
-output names, **None** / **Median filter**, and kernel sizes **3**, **5**, or **7**
-voxels (default 3). Median filtering uses a cubic 3D neighborhood with reflected
-borders after deconvolution and before uint16 conversion. Preview and IMS export
-use the same filter. Disabled channels remain unchanged. Select **None** (the
-default) to leave a channel unfiltered; output names default to the deconvolution names.
-Settings are saved between sessions and included in batch reports. SciPy is bundled.
+For compatibility with existing installations, cache and preferences folders
+retain their historical `Batch Deconvolution` name:
+`~/Library/Application Support/Batch Deconvolution` on macOS and
+`%LOCALAPPDATA%\Batch Deconvolution` on Windows. Default data/output folders
+remain under Documents/Batch Deconvolution. Each runtime has a content-addressed
+cache; old `runtime-*` directories can be removed when no app uses them. macOS
+launcher errors are written to `launcher.log` in the application-support folder.
+
+ImageJ native libraries are extracted into the user cache, and processing uses
+temporary directories. Input images and PSFs are not bundled. Missing or corrupt
+packaged runtime files require reinstalling the app; source installations can
+be repaired with `python scripts/setup_imagej.py`.
+
+These installers are unsigned and not notarized. GPU processing requires a
+working OpenCL driver. Build and launcher checks do not replace native-platform
+checks of GUI startup, PSF generation, preview, and IMS export. See
+[platform verification](platform-verification.md).

@@ -149,12 +149,16 @@ def launch_command(memory, worker, parameters, directory=RUNTIME):
         raise ValueError('ImageJ memory must be a positive integer followed by m or g.')
     native = prepare_native_cache(directory)
     cache = cache_directory()
+    compiled = BOOTSTRAP.with_suffix('.class').is_file()
+    if compiled:
+        classpath = str(BOOTSTRAP.parent) + os.pathsep + classpath
+    entrypoint = 'HeadlessImageJ' if compiled else str(BOOTSTRAP)
     command = [str(java_executable()), f'-Xmx{memory}', '-Djava.awt.headless=true',
                f'-Dorg.bytedeco.javacpp.cachedir={cache / "javacpp"}',
                f'-Djava.library.path={native}',
                '-Dimagej.updater.disableAutocheck=true', '-Dpython.cachedir.skip=true',
                f'-Dij.dir={directory}', f'-Dplugins.dir={directory / "plugins"}',
-               '-cp', classpath, str(BOOTSTRAP), str(worker)]
+               '-cp', classpath, entrypoint, str(worker)]
     for key, value in parameters.items():
         command.extend((key, str(value).lower() if isinstance(value, bool) else str(value)))
     return command
