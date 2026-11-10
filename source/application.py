@@ -15,6 +15,7 @@ import threading
 import tkinter as tk
 import webbrowser
 from tkinter import ttk, filedialog, messagebox
+from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
 
 import h5py
@@ -796,70 +797,132 @@ class Application:
         for widget in self.post_panel.winfo_children():
             widget.destroy()
         self.post_vars.clear()
-        for col,label in enumerate(('Channel','Filter','Kernel/width')):
+        for col,label in enumerate(('Channel','Filter','Kernel')):
             ttk.Label(self.post_panel,text=label).grid(row=0,column=col,sticky='w',padx=3)
         self.post_panel.columnconfigure(1,weight=0)
-        self.post_panel.columnconfigure(2,weight=1)
+        self.post_panel.columnconfigure(2,weight=1,uniform='')
+        intensity_header = ttk.Label(self.post_panel,text='Intensity')
+        methods = []
+        kernel_minimum = intensity_minimum = 0
+        def refresh_columns():
+            show_intensity = any(method.get()=='Bilateral filter' for method in methods)
+            self.post_panel.columnconfigure(3,weight=1 if show_intensity else 0,
+                                            uniform='',minsize=intensity_minimum if show_intensity else 0)
+            if show_intensity:
+                intensity_header.grid(row=0,column=3,sticky='w',padx=3)
+            else:
+                intensity_header.grid_remove()
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
             pref = self.preferences[key]
             post_enabled = tk.BooleanVar(value=pref.get('post_enabled',pref.get('post_filter','None')!='None'))
             method = tk.StringVar(value=pref.get('post_filter','None') if pref.get('post_filter','None')!='None' else 'Median filter')
+            methods.append(method)
             kernel = tk.StringVar(value=kernel_label(pref.get('post_kernel','3x3x1')))
             input_cell = ttk.Frame(self.post_panel)
             input_cell.grid(row=row,column=0,sticky='w',padx=3)
             enabled = pref.get('enabled',True)
             ttk.Checkbutton(input_cell,variable=post_enabled).pack(side='left')
             ttk.Label(input_cell,text=f"C{channel['index']+1}: {pref['name'].strip()}",wraplength=160).pack(side='left')
-            choice = ttk.Combobox(self.post_panel,textvariable=method,values=('Median filter','Gaussian filter'),state='readonly',width=14)
+            choice = ttk.Combobox(self.post_panel,textvariable=method,values=('Median filter','Gaussian filter','Bilateral filter'),state='readonly',width=13)
+            filter_font = tkfont.Font(root=self.post_panel,font=choice.cget('font'))
+            # Tk adds native padding and the chevron outside this text width.
+            choice.configure(width=math.ceil(max(filter_font.measure(label) for label in choice.cget('values')) /
+                                             filter_font.measure('0')))
             size = ttk.Combobox(self.post_panel,textvariable=kernel,values=MEDIAN_KERNELS,state='readonly',width=7)
             for col,widget in enumerate((choice,size),1):
                 widget.grid(row=row,column=col,sticky='ew',padx=3,pady=3)
                 widget.configure(state='readonly' if post_enabled.get() else 'disabled')
+            choice.grid_configure(sticky='w')
             width = tk.DoubleVar(value=math.log10(min(10,max(.25,float(pref.get('post_sigma_pixels',1.0))))))
             gaussian = ttk.Frame(self.post_panel)
-            slider = ttk.Scale(gaussian,from_=math.log10(.25),to=1,variable=width,length=140)
-            slider.pack(side='left',fill='x',expand=True)
-            caption = ttk.Label(gaussian)
-            caption.pack(side='right',padx=(6,0))
-            def refresh_width(*args,width=width,caption=caption):
+            slider = ttk.Scale(gaussian,from_=math.log10(.25),to=1,variable=width,length=80)
+            slider.grid(row=0,column=0,sticky='ew')
+            width_readout = ttk.Frame(gaussian)
+            width_readout.grid(row=0,column=1,sticky='e',padx=(6,0))
+            width_um = tk.StringVar()
+            width_entry = ttk.Entry(width_readout,textvariable=width_um,width=5)
+            width_entry.pack(side='left',padx=(0,3))
+            ttk.Label(width_readout,text='µm').pack(side='left')
+            intensity = tk.DoubleVar(value=math.log10(min(65535,max(1,float(pref.get('post_sigma_intensity',1000.0))))))
+            bilateral = ttk.Frame(self.post_panel)
+            intensity_slider = ttk.Scale(bilateral,from_=0,to=math.log10(65535),variable=intensity,length=80)
+            intensity_slider.grid(row=0,column=0,sticky='ew')
+            intensity_caption = ttk.Label(bilateral,width=5,anchor='e')
+            intensity_caption.grid(row=0,column=1,sticky='e',padx=(6,0))
+            for cell in (gaussian,bilateral):
+                cell.columnconfigure(0,weight=1,minsize=24)
+                cell.columnconfigure(1,weight=0)
+            kernel_minimum = max(kernel_minimum,sum(child.winfo_reqwidth() for child in width_readout.winfo_children()) + 3 + 6 + 24 + 6)
+            intensity_minimum = max(intensity_minimum,intensity_caption.winfo_reqwidth() + 6 + 24 + 6)
+            def refresh_width(*args,width=width,width_um=width_um,width_entry=width_entry):
                 pixels = 10**width.get()
                 try:
                     xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
-                    caption.configure(text=f'{pixels*xy:.4g} µm')
+                    formatted = f'{pixels*xy:.2f}'.rstrip('0').rstrip('.')
+                    width_um.set(formatted)
+                    width_entry.configure(width=max(5,len(formatted)))
                 except ValueError:
-                    caption.configure(text=f'{pixels:.3g} × XY pixel (set pixel size)')
+                    width_um.set('')
+            def commit_width(event,width=width,width_um=width_um,refresh_width=refresh_width):
+                try:
+                    xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
+                    value = float(width_um.get())
+                    if not math.isfinite(value) or value<=0:
+                        raise ValueError()
+                    width.set(math.log10(min(10,max(.25,value/xy))))
+                except ValueError:
+                    pass
+                refresh_width()
+                if event.keysym=='Return':
+                    return 'break'
+            width_entry.bind('<Return>',commit_width)
+            width_entry.bind('<FocusOut>',commit_width)
             xy_var = self.fields['PSF generation']['XY_PIXEL_SIZE_UM'][0]
             trace = xy_var.trace_add('write',refresh_width)
             gaussian.bind('<Destroy>',lambda event,frame=gaussian,var=xy_var,trace=trace:
                           var.trace_remove('write',trace) if event.widget is frame else None)
-            def update_controls(method=method,size=size,gaussian=gaussian,slider=slider,
+            def update_controls(method=method,size=size,gaussian=gaussian,slider=slider,width_entry=width_entry,
+                                bilateral=bilateral,intensity_slider=intensity_slider,
+                                intensity=intensity,intensity_caption=intensity_caption,
                                 choice=choice,enabled=enabled,post_enabled=post_enabled,row=row):
                 active = post_enabled.get()
                 choice.configure(state='readonly' if active else 'disabled')
                 size.configure(state='readonly' if active else 'disabled')
                 slider.configure(state='normal' if active else 'disabled')
-                if method.get()=='Gaussian filter':
+                width_entry.configure(state='normal' if active else 'disabled')
+                intensity_slider.configure(state='normal' if active else 'disabled')
+                intensity_caption.configure(text=f'{10**intensity.get():.0f}')
+                if method.get()=='Bilateral filter':
+                    bilateral.grid(row=row,column=3,sticky='ew',padx=3,pady=3)
+                else:
+                    bilateral.grid_remove()
+                if method.get() in ('Gaussian filter','Bilateral filter'):
                     size.grid_remove()
                     gaussian.grid(row=row,column=2,sticky='ew',padx=3,pady=3)
                 else:
                     gaussian.grid_remove()
                     size.grid()
+                refresh_columns()
             refresh_width()
             update_controls()
-            def changed(*args,key=key,post_enabled=post_enabled,method=method,kernel=kernel,width=width,
+            def changed(*args,key=key,post_enabled=post_enabled,method=method,kernel=kernel,width=width,intensity=intensity,
                         update_controls=update_controls,refresh_width=refresh_width):
                 self.preferences[key].update(post_enabled=post_enabled.get(),post_filter=method.get(),post_kernel=kernel.get(),
-                                             post_sigma_pixels=10**width.get())
+                                             post_sigma_pixels=10**width.get(),post_sigma_intensity=10**intensity.get())
                 update_controls()
                 refresh_width()
                 for visibility in self.preview.channel_visibility:
                     visibility[int(key)] = self.preferences[key].get('enabled',True) or post_enabled.get()
                 self.preview.recolor()
                 self.invalidate(preview=True,post_processing=True)
-            for var in (post_enabled,method,kernel,width):
+            for var in (post_enabled,method,kernel,width,intensity):
                 var.trace_add('write',changed)
             self.post_vars[key] = (post_enabled,method,kernel)
+        # Each column reserves only its own readout. Equal slider requests and
+        # equal column weights give remaining space to matching slider tracks.
+        self.post_panel.columnconfigure(2,minsize=kernel_minimum)
+        refresh_columns()
 
     def read_field(self,group,name):
         var,kind,label = self.fields[group][name]
@@ -973,15 +1036,20 @@ class Application:
             if not pref.get('post_enabled',method!='None'):
                 method = 'None'
             kernel = kernel_label(pref.get('post_kernel','3x3x1'))
-            if method not in ('None','Median filter','Gaussian filter'):
+            if method not in ('None','Median filter','Gaussian filter','Bilateral filter'):
                 raise ValueError(f'Select a valid filter and kernel for C{index+1}.')
             post = dict(filter=method,kernel=kernel)
-            if method=='Gaussian filter':
+            if method in ('Gaussian filter','Bilateral filter'):
                 sigma_pixels = min(10,max(.25,float(pref.get('post_sigma_pixels',1.0))))
                 if not math.isfinite(sigma_pixels) or not .249999999999<=sigma_pixels<=10.000000001:
-                    raise ValueError(f'Gaussian width must be between 0.25 and 10 XY pixels for C{index+1}.')
+                    raise ValueError(f'Filter width must be between 0.25 and 10 XY pixels for C{index+1}.')
                 xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
                 post.update(sigma_um=sigma_pixels*xy,xy_pixel_size_um=xy)
+                if method=='Bilateral filter':
+                    sigma_intensity = float(pref.get('post_sigma_intensity',1000.0))
+                    if not math.isfinite(sigma_intensity) or sigma_intensity<=0:
+                        raise ValueError(f'Bilateral intensity tolerance must be positive for C{index+1}.')
+                    post['sigma_intensity'] = sigma_intensity
             settings['CHANNEL_POST_PROCESSING'][str(index)] = post
             if not name:
                 name = next(c['name'] for c in self.active_channels if c['index']==index)

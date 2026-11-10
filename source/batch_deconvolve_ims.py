@@ -268,18 +268,21 @@ def post_process(result, settings):
     method = settings.get('filter', 'None')
     if method == 'None':
         return result
-    if method == 'Gaussian filter':
+    if method in ('Gaussian filter', 'Bilateral filter'):
         from scipy.ndimage import gaussian_filter
         xy = float(settings['xy_pixel_size_um'])
         sigma_um = float(settings['sigma_um'])
         if not np.isfinite(xy) or xy <= 0 or not np.isfinite(sigma_um) or sigma_um <= 0:
-            raise ValueError('Gaussian width and XY pixel size must be finite and positive.')
+            raise ValueError('Filter width and XY pixel size must be finite and positive.')
         # Smooth XY independently in each Z plane; width is the physical standard deviation.
         sigma = sigma_um / xy
+        if method == 'Bilateral filter':
+            from bilateral_filter import bilateral_filter
+            return bilateral_filter(result, sigma, float(settings.get('sigma_intensity', 1000.0)))
         return gaussian_filter(np.asarray(result, dtype=np.float32),
                                sigma=(0,) * (result.ndim - 2) + (sigma, sigma), mode='reflect')
     if method != 'Median filter':
-        raise ValueError('Select None, Median filter or Gaussian filter.')
+        raise ValueError('Select None, Median filter, Gaussian filter or Bilateral filter.')
     from scipy.ndimage import median_filter
     return median_filter(result, size=kernel_zyx(settings.get('kernel', 3)), mode='reflect')
 
