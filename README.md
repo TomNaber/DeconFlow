@@ -40,7 +40,13 @@ Python, Java, and ImageJ are included.
 
 ## Citation
 
-If you use this app, please cite DeconFlow using GitHub’s **Cite this repository** option to generate a citation in APA or BibTeX format, or see [CITATION.cff](CITATION.cff).
+If you use this app, please cite it as follows (use the version you used):
+
+<!-- citation:start -->
+> Naber, T. (2026). *DeconFlow: Batch Richardson–Lucy deconvolution with Gibson–Lanni point-spread functions* (Version 1.0.0) [Computer software]. https://github.com/TomNaber/Imaris-Batch-Deconvolution/releases/tag/v1.0.0
+<!-- citation:end -->
+
+The citation version updates automatically when a new version tag is pushed. For BibTeX, use GitHub’s **Cite this repository** option or see [CITATION.cff](CITATION.cff).
 
 ## Dev install
 

@@ -1,0 +1,66 @@
+name: Update citation
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-citation
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Update citation from newest version tag
+        run: |
+          python - <<'PYTHON'
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+
+          tags = [tag for tag in git('tag', '--list').splitlines()
+                  if re.fullmatch(r'v\d+\.\d+\.\d+', tag)]
+          tag = max(tags, key=lambda tag: tuple(map(int, tag[1:].split('.'))))
+          version = tag[1:]
+          date = git('log', '-1', '--format=%cs', tag)
+          url = f'https://github.com/TomNaber/Imaris-Batch-Deconvolution/releases/tag/{tag}'
+          citation = (f'> Naber, T. ({date[:4]}). *DeconFlow: Batch Richardson–Lucy '
+                      f'deconvolution with Gibson–Lanni point-spread functions* (Version {version}) '
+                      f'[Computer software]. {url}')
+          readme = Path('README.md')
+          content, count = re.subn(
+              r'(?<=<!-- citation:start -->\n).*?(?=\n<!-- citation:end -->)',
+              lambda _: citation, readme.read_text(), flags=re.DOTALL)
+          assert count == 1, 'Expected exactly one citation block'
+          cff = Path('CITATION.cff')
+          metadata = cff.read_text()
+          for field, value in [('version', version), ('date-released', date)]:
+              metadata, count = re.subn(
+                  rf'^{field}:.*$', lambda _: f'{field}: "{value}"',
+                  metadata, flags=re.MULTILINE)
+              assert count == 1, f'Expected exactly one {field} field'
+          readme.write_text(content)
+          cff.write_text(metadata)
+          PYTHON
+      - name: Commit citation update
+        run: |
+          git add README.md CITATION.cff
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Update citation to latest version tag'
+          git push
