@@ -100,6 +100,8 @@ class BatchReport:
 
     def record_psfs(self, channels, psfs):
         for index, (channel, volume) in enumerate(zip(channels, psfs)):
+            if volume is None:
+                continue
             source = Path(channel['psf_file'])
             self.data['psfs'].append(dict(assignment_position=index, original_path=str(source.resolve()),
                                          sha256=sha256(source), shape_zyx=list(volume.shape),

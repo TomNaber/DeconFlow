@@ -34,25 +34,45 @@ from source.ui_style import workspace_background
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = Path(os.environ.get('BATCH_DECONVOLUTION_WORKSPACE', ROOT))
 GENERATOR_FIELDS = [
-    ('PSF_SIZE_Z', 'PSF Z size (planes)', 209, int),
-    ('PSF_SIZE_XY', 'PSF X/Y size (pixels)', 119, int),
-    ('OVERSAMPLE_FACTOR', 'Calculation oversampling factor', 3, int),
+    ('PSF_SIZE_Z', 'PSF Z size (planes)', 80, int),
+    ('PSF_SIZE_XY', 'PSF X/Y size (pixels)', 40, int),
+    ('OVERSAMPLE_FACTOR', 'Calculation oversampling factor', 2, int),
     ('SCAN_DIRECTION', 'Axial scan direction', 'Up', str),
     ('XY_PIXEL_SIZE_UM', 'Lateral pixel size X/Y (µm)', .0801669, float),
     ('Z_STEP_UM', 'Axial sampling interval Z (µm)', .3002, float),
     ('NUMERICAL_APERTURE', 'Objective numerical aperture', 1.4, float),
     ('SPECIMEN_RI', 'Specimen refractive index', 1.45, float),
     ('OBJECTIVE_WORKING_DISTANCE_UM', 'Objective working distance (µm)', 140., float),
-    ('IMAGING_DEPTH_UM', 'Imaging depth (µm)', 400., float),
+    ('IMAGING_DEPTH_UM', 'Imaging depth (µm)', 20., float),
     ('PINHOLE_AIRY_UNITS', 'Confocal pinhole (Airy units)', 1., float),
 ]
 PAIRS = [
-    ('IMMERSION_RI_DESIGN', 'IMMERSION_RI_ACTUAL', 'Immersion refractive index', 1.4811),
-    ('COVERSLIP_RI_DESIGN', 'COVERSLIP_RI_ACTUAL', 'Coverslip refractive index', 1.5255),
-    ('COVERSLIP_THICKNESS_DESIGN_UM', 'COVERSLIP_THICKNESS_ACTUAL_UM', 'Coverslip thickness (µm)', 145.),
+    ('IMMERSION_RI_DESIGN', 'IMMERSION_RI_ACTUAL', 'Immersion refractive index', 1.518),
+    ('COVERSLIP_RI_DESIGN', 'COVERSLIP_RI_ACTUAL', 'Coverslip refractive index', 1.52),
+    ('COVERSLIP_THICKNESS_DESIGN_UM', 'COVERSLIP_THICKNESS_ACTUAL_UM', 'Coverslip thickness (µm)', 170.),
 ]
 DEFAULT_CHANNELS = [dict(name=n, excitation_nm=x, emission_nm=e) for n,x,e in
                     [('Alexa488',488,525),('Alexa568',552,603),('Alexa647',638,671)]]
+
+
+def default_memory_gb():
+    """Use half of installed physical RAM, in GiB."""
+    if sys.platform == 'win32':
+        import ctypes
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong) for name in
+                ('total', 'available', 'page_total', 'page_available', 'virtual_total', 'virtual_available', 'extended')]
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            raise OSError('Cannot determine system RAM')
+        total = status.total
+    elif sys.platform == 'darwin':
+        total = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True))
+    else:
+        total = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+    return total / (2 * 1024**3)
 
 
 class Application:
@@ -157,12 +177,12 @@ class Application:
                              '<Shift-MouseWheel>','<Shift-Button-4>','<Shift-Button-5>'):
                 w.bind_class(widget_class,sequence,self.scroll_field)
         self.setup = self.group('Setup')
-        _,holder = self.field(self.setup,'Deconvolution',0,'INPUT_DIR','Z-stack input folder',WORKSPACE/'examples',str,'directory')
+        _,holder = self.field(self.setup,'Deconvolution',0,'INPUT_DIR','Z-stack input folder',ROOT/'examples',str,'directory')
         ttk.Button(holder,text='Refresh',command=self.refresh_input).pack(side='left',padx=(4,0))
         ttk.Label(self.setup,textvariable=self.stack_status).grid(row=1,column=0,columnspan=2,sticky='w')
-        self.field(self.setup,'Deconvolution',2,'OUTPUT_DIR','Output folder',WORKSPACE/'dcv',str,'directory')
+        self.field(self.setup,'Deconvolution',2,'OUTPUT_DIR','Output folder','',str,'directory')
         self.field(self.setup,'Deconvolution',3,'OVERWRITE','Overwrite existing output',False,bool)
-        self.field(self.setup,'Deconvolution',4,'FIJI_MEMORY','ImageJ max memory (GB)',12,float)
+        self.field(self.setup,'Deconvolution',4,'FIJI_MEMORY','ImageJ max memory (GB)',default_memory_gb(),float)
         self.psf_setup = self.group('PSF setup')
         radios = ttk.Frame(self.psf_setup)
         radios.pack(fill='x')
@@ -191,7 +211,7 @@ class Application:
             _,holder = self.field(self.optics,'PSF generation',row,*setting)
             name = setting[0]
             if name in ('XY_PIXEL_SIZE_UM','Z_STEP_UM'):
-                var = tk.BooleanVar(value=False)
+                var = tk.BooleanVar(value=True)
                 check = ttk.Checkbutton(holder,text='Auto',variable=var,state='disabled',
                                         command=self.auto_spacing_changed)
                 check.pack(side='left',padx=(4,0))
@@ -200,7 +220,7 @@ class Application:
         offset = len(GENERATOR_FIELDS)-3
         for index,(design,actual,label,default) in enumerate(PAIRS):
             self.field(self.optics,'PSF generation',offset+index*2,design,label+' (design)',default,float)
-            self.field(self.optics,'PSF generation',offset+index*2+1,actual,label+' (actual)',default,float)
+            self.field(self.optics,'PSF generation',offset+index*2+1,actual,label+' (actual)',{'IMMERSION_RI_ACTUAL':1.518,'COVERSLIP_RI_ACTUAL':1.5255,'COVERSLIP_THICKNESS_ACTUAL_UM':145.}[actual],float)
         self.definition_panel = ttk.Frame(self.optics)
         self.definition_panel.grid(row=offset+len(PAIRS)*2,column=0,columnspan=2,sticky='ew',pady=(1,8))
         self.deconvolution = self.group('Deconvolution')
@@ -213,7 +233,7 @@ class Application:
                                       self.definition_panel,self.external_channels,self.channel_panel]
         actions = ttk.Frame(left,padding=(0,2,0,8))
         actions.grid(row=2,column=0,sticky='ew',padx=side_padding)
-        self.run_button = ttk.Button(actions,text='Run batch deconvolution',command=lambda:self.request('batch'))
+        self.run_button = ttk.Button(actions,text='Run batch processing',command=lambda:self.request('batch'))
         self.run_button.pack(side='left')
         self.cancel_button = ttk.Button(actions,text='Cancel',command=self.cancel,state='disabled')
         self.cancel_button.pack(side='left',padx=5)
@@ -230,7 +250,7 @@ class Application:
         right = ttk.Notebook(workspace)
         right.grid(row=0,column=1,sticky='nsew',padx=(5,10),pady=10)
         self.preview = Preview(right,self.preferences,self.refresh_input,self.error)
-        right.add(self.preview,text='Preview deconvolution')
+        right.add(self.preview,text='Preview processing')
         self.psf_view = PSFView(right,self.preferences,lambda:self.request('view'),self.log,self.error)
         right.add(self.psf_view,text='View PSF')
         self.psf_view.cancel_button.configure(command=self.cancel)
@@ -581,7 +601,7 @@ class Application:
         self.enabled_vars.clear()
         for channel in self.active_channels:
             key = str(channel['index'])
-            self.preferences.setdefault(key,dict(name=channel['name'],color='Original',enabled=True,iterations=40))
+            self.preferences.setdefault(key,dict(name='',color='Original',enabled=True,iterations=40))
             self.definitions.setdefault(key,dict(name=channel['name'],excitation_nm='',emission_nm=''))
             self.preferences[key].setdefault('regularization',self.default_regularization)
             var = tk.BooleanVar(value=self.preferences[key].get('enabled',True))
@@ -631,7 +651,7 @@ class Application:
         enabled = self.enabled_vars[key].get()
         self.preferences[key]['enabled'] = enabled
         for visibility in self.preview.channel_visibility:
-            visibility[int(key)] = enabled
+            visibility[int(key)] = enabled or self.preferences[key].get('post_enabled',False)
         self.render_definitions()
         self.render_external_channels()
         self.render_channels()
@@ -774,31 +794,68 @@ class Application:
         for widget in self.post_panel.winfo_children():
             widget.destroy()
         self.post_vars.clear()
-        for col,label in enumerate(('Channel','Filter','Kernel (X×Y×Z voxels)')):
+        for col,label in enumerate(('Channel','Filter','Kernel/width')):
             ttk.Label(self.post_panel,text=label).grid(row=0,column=col,sticky='w',padx=3)
-        self.post_panel.columnconfigure(1,weight=1)
+        self.post_panel.columnconfigure(1,weight=0)
+        self.post_panel.columnconfigure(2,weight=1)
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
             pref = self.preferences[key]
             post_enabled = tk.BooleanVar(value=pref.get('post_enabled',pref.get('post_filter','None')!='None'))
             method = tk.StringVar(value=pref.get('post_filter','None') if pref.get('post_filter','None')!='None' else 'Median filter')
-            kernel = tk.StringVar(value=kernel_label(pref.get('post_kernel',3)))
+            kernel = tk.StringVar(value=kernel_label(pref.get('post_kernel','3x3x1')))
             input_cell = ttk.Frame(self.post_panel)
             input_cell.grid(row=row,column=0,sticky='w',padx=3)
             enabled = pref.get('enabled',True)
-            ttk.Checkbutton(input_cell,variable=post_enabled,state='normal' if enabled else 'disabled').pack(side='left')
+            ttk.Checkbutton(input_cell,variable=post_enabled).pack(side='left')
             ttk.Label(input_cell,text=f"C{channel['index']+1}: {pref['name'].strip()}",wraplength=160).pack(side='left')
-            choice = ttk.Combobox(self.post_panel,textvariable=method,values=('Median filter',),state='readonly',width=12)
+            choice = ttk.Combobox(self.post_panel,textvariable=method,values=('Median filter','Gaussian filter'),state='readonly',width=14)
             size = ttk.Combobox(self.post_panel,textvariable=kernel,values=MEDIAN_KERNELS,state='readonly',width=7)
             for col,widget in enumerate((choice,size),1):
                 widget.grid(row=row,column=col,sticky='ew',padx=3,pady=3)
-                widget.configure(state='readonly' if enabled and post_enabled.get() else 'disabled')
-            def changed(*args,key=key,post_enabled=post_enabled,method=method,kernel=kernel,choice=choice,size=size,enabled=enabled):
-                self.preferences[key].update(post_enabled=post_enabled.get(),post_filter=method.get(),post_kernel=kernel.get())
-                for widget in (choice,size):
-                    widget.configure(state='readonly' if enabled and post_enabled.get() else 'disabled')
+                widget.configure(state='readonly' if post_enabled.get() else 'disabled')
+            width = tk.DoubleVar(value=math.log10(min(10,max(.25,float(pref.get('post_sigma_pixels',1.0))))))
+            gaussian = ttk.Frame(self.post_panel)
+            slider = ttk.Scale(gaussian,from_=math.log10(.25),to=1,variable=width,length=140)
+            slider.pack(side='left',fill='x',expand=True)
+            caption = ttk.Label(gaussian)
+            caption.pack(side='right',padx=(6,0))
+            def refresh_width(*args,width=width,caption=caption):
+                pixels = 10**width.get()
+                try:
+                    xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
+                    caption.configure(text=f'{pixels*xy:.4g} µm')
+                except ValueError:
+                    caption.configure(text=f'{pixels:.3g} × XY pixel (set pixel size)')
+            xy_var = self.fields['PSF generation']['XY_PIXEL_SIZE_UM'][0]
+            trace = xy_var.trace_add('write',refresh_width)
+            gaussian.bind('<Destroy>',lambda event,frame=gaussian,var=xy_var,trace=trace:
+                          var.trace_remove('write',trace) if event.widget is frame else None)
+            def update_controls(method=method,size=size,gaussian=gaussian,slider=slider,
+                                choice=choice,enabled=enabled,post_enabled=post_enabled,row=row):
+                active = post_enabled.get()
+                choice.configure(state='readonly' if active else 'disabled')
+                size.configure(state='readonly' if active else 'disabled')
+                slider.configure(state='normal' if active else 'disabled')
+                if method.get()=='Gaussian filter':
+                    size.grid_remove()
+                    gaussian.grid(row=row,column=2,sticky='ew',padx=3,pady=3)
+                else:
+                    gaussian.grid_remove()
+                    size.grid()
+            refresh_width()
+            update_controls()
+            def changed(*args,key=key,post_enabled=post_enabled,method=method,kernel=kernel,width=width,
+                        update_controls=update_controls,refresh_width=refresh_width):
+                self.preferences[key].update(post_enabled=post_enabled.get(),post_filter=method.get(),post_kernel=kernel.get(),
+                                             post_sigma_pixels=10**width.get())
+                update_controls()
+                refresh_width()
+                for visibility in self.preview.channel_visibility:
+                    visibility[int(key)] = self.preferences[key].get('enabled',True) or post_enabled.get()
+                self.preview.recolor()
                 self.invalidate(preview=True,post_processing=True)
-            for var in (post_enabled,method,kernel):
+            for var in (post_enabled,method,kernel,width):
                 var.trace_add('write',changed)
             self.post_vars[key] = (post_enabled,method,kernel)
 
@@ -824,6 +881,8 @@ class Application:
         settings['SCAN_DIRECTION'] = settings['SCAN_DIRECTION'].lower()
         if settings['SCAN_DIRECTION'] not in ('up','down'):
             raise ValueError('Select Up or Down for axial scan direction.')
+        # Display scan direction in the input stack's reversed Z convention.
+        settings['SCAN_DIRECTION'] = {'up':'down','down':'up'}[settings['SCAN_DIRECTION']]
         settings['CHANNELS'] = []
         for c in self.active_channels:
             definition = self.definitions[str(c['index'])]
@@ -846,7 +905,15 @@ class Application:
     def enabled_indices(self):
         return [c['index'] for c in self.active_channels if self.preferences[str(c['index'])].get('enabled',True)]
 
+    def processing_indices(self):
+        return [c['index'] for c in self.active_channels
+                if self.preferences[str(c['index'])].get('enabled',True)
+                or self.preferences[str(c['index'])].get('post_enabled',False)]
+
     def can_resolve(self,indices):
+        if indices and not any(i in self.enabled_indices() for i in indices):
+            return True
+        indices = [i for i in indices if i in self.enabled_indices()]
         try:
             if not indices:
                 return False
@@ -857,11 +924,14 @@ class Application:
         except (ValueError,OSError,tk.TclError):
             return False
 
-    def resolved_assignments(self,catalog,indices):
+    def resolved_assignments(self,catalog,indices,processing=False):
         by_index = {c['index']:c['psf_file'] for c in catalog}
         available = {c['psf_file'] for c in catalog}
         result = {}
         for index in indices:
+            if processing and index not in self.enabled_indices():
+                result[index] = None
+                continue
             selected = self.selected_assignment(index)
             if self.source.get()=='internal':
                 selected = by_index.get(index)
@@ -884,13 +954,13 @@ class Application:
         for index in indices:
             pref = self.preferences[str(index)]
             try:
-                iterations = int(pref.get('iterations',40))
+                iterations = int(pref.get('iterations',40)) if pref.get('enabled',True) else 40
                 if iterations<1:
                     raise ValueError()
             except (ValueError,TypeError):
                 raise ValueError(f'Enter positive whole-number iterations for C{index+1}.') from None
             try:
-                regularization = float(pref.get('regularization',self.default_regularization))
+                regularization = float(pref.get('regularization',self.default_regularization)) if pref.get('enabled',True) else self.default_regularization
                 if not math.isfinite(regularization) or regularization<0:
                     raise ValueError()
             except (ValueError,TypeError):
@@ -900,12 +970,19 @@ class Application:
             method = pref.get('post_filter','None')
             if not pref.get('post_enabled',method!='None'):
                 method = 'None'
-            kernel = kernel_label(pref.get('post_kernel',3))
-            if method not in ('None','Median filter'):
+            kernel = kernel_label(pref.get('post_kernel','3x3x1'))
+            if method not in ('None','Median filter','Gaussian filter'):
                 raise ValueError(f'Select a valid filter and kernel for C{index+1}.')
-            settings['CHANNEL_POST_PROCESSING'][str(index)] = dict(filter=method,kernel=kernel)
+            post = dict(filter=method,kernel=kernel)
+            if method=='Gaussian filter':
+                sigma_pixels = min(10,max(.25,float(pref.get('post_sigma_pixels',1.0))))
+                if not math.isfinite(sigma_pixels) or not .249999999999<=sigma_pixels<=10.000000001:
+                    raise ValueError(f'Gaussian width must be between 0.25 and 10 XY pixels for C{index+1}.')
+                xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
+                post.update(sigma_um=sigma_pixels*xy,xy_pixel_size_um=xy)
+            settings['CHANNEL_POST_PROCESSING'][str(index)] = post
             if not name:
-                raise ValueError(f'Enter an output name for C{index+1}.')
+                name = next(c['name'] for c in self.active_channels if c['index']==index)
             settings['CHANNEL_ITERATIONS'][str(index)] = iterations
             if batch:
                 edit = {'name':name}
@@ -914,12 +991,14 @@ class Application:
                 settings['CHANNEL_EDITS'][str(index)] = edit
             else:
                 settings['OUTPUT_CHANNEL_NAMES'][str(index)] = name
-        if require_psfs:
+        if require_psfs and not any(i in self.enabled_indices() for i in indices):
+            settings['PSF_FILES'] = [None] * len(indices)
+        elif require_psfs:
             if catalog is None:
                 catalog = self.imported_catalog if self.source.get()=='external' else self.session.get(self.generator_settings())
             if not catalog:
                 raise ValueError('Internal PSFs must be resolved before processing.')
-            settings['PSF_FILES'] = list(self.resolved_assignments(catalog,indices).values())
+            settings['PSF_FILES'] = list(self.resolved_assignments(catalog,indices,processing=True).values())
         return settings
 
     def preview_settings(self):
@@ -933,14 +1012,19 @@ class Application:
         try:
             if self.refresh_job:
                 self.refresh_input()
-            indices = self.preview.selected_channels if kind=='preview' else self.enabled_indices()
+            indices = self.preview.selected_channels if kind=='preview' else (self.enabled_indices() if kind=='view' else self.processing_indices())
             if not indices:
                 raise ValueError('Select at least one input channel.')
             if not self.can_resolve(indices):
                 if self.source.get()=='internal':
                     self.generator_settings()
                 raise ValueError((self.import_error if self.source.get()=='external' else None) or 'Select a PSF for each enabled channel.')
-            generator = self.generator_settings() if self.source.get()=='internal' else None
+            generator = self.generator_settings() if self.source.get()=='internal' and any(i in self.enabled_indices() for i in indices) else None
+            if kind=='batch' and not self.fields['Deconvolution']['OUTPUT_DIR'][0].get().strip():
+                folder = filedialog.askdirectory(parent=self.window,title='Select batch output folder')
+                if not folder:
+                    return
+                self.fields['Deconvolution']['OUTPUT_DIR'][0].set(folder)
             settings = None if kind=='view' else self.deconvolution_settings(indices,batch=kind=='batch',require_psfs=False)
             if kind=='batch' and generator and self.export_enabled.get() and not self.export_folder.get().strip():
                 raise ValueError('Select a folder for exporting generated PSFs.')
@@ -974,6 +1058,9 @@ class Application:
 
     def resolve(self,request):
         generator = request['generator']
+        if request['kind']!='view' and not any(i in self.enabled_indices() for i in request['indices']):
+            self.continue_request(request,[])
+            return
         catalog = self.session.get(generator) if generator else self.imported_catalog
         if catalog:
             if generator:
@@ -993,7 +1080,7 @@ class Application:
     def continue_request(self,request,catalog):
         if not self.current(request):
             return
-        assignments = self.resolved_assignments(catalog,request['indices'])
+        assignments = self.resolved_assignments(catalog,request['indices'],processing=request['kind']!='view')
         if request['kind']=='preview':
             self.preview.deconvolve_resolved(automatic=request['automatic'])
         elif request['kind']=='view':
@@ -1119,7 +1206,7 @@ class Application:
         if locked:
             def visit(widget):
                 for child in widget.winfo_children():
-                    if isinstance(child,(ttk.Entry,ttk.Button,ttk.Checkbutton,ttk.Radiobutton,ttk.Combobox,ttk.Spinbox)):
+                    if isinstance(child,(ttk.Entry,ttk.Button,ttk.Checkbutton,ttk.Radiobutton,ttk.Combobox,ttk.Spinbox,ttk.Scale)):
                         self.locked_widgets[child] = str(child.cget('state'))
                         child.configure(state='disabled')
                     visit(child)
@@ -1187,7 +1274,7 @@ class Application:
         self.update_channel_adjustment()
         indices = self.enabled_indices()
         ready = self.can_resolve(indices)
-        self.run_button.configure(state='normal' if ready and not self.batch_locked else 'disabled')
+        self.run_button.configure(state='normal' if self.can_resolve(self.processing_indices()) and not self.batch_locked else 'disabled')
         self.psf_view.view_button.configure(state='normal' if ready and not self.batch_locked and not self.view_loading else 'disabled')
         self.psf_view.sync_button.configure(state='disabled' if self.batch_locked else 'normal')
         busy = self.psf_sync_job is not None or self.process is not None or self.export_task is not None or self.view_loading or self.preview.busy=='deconvolve' or self.preview.pending is not None or self.preview.sync_job is not None
@@ -1331,7 +1418,7 @@ class Application:
                 for design,actual,_,_ in PAIRS:
                     self.fields['PSF generation'][actual][0].set(self.fields['PSF generation'][design][0].get())
             for name,var in self.auto_spacing_vars.items():
-                var.set(config.getboolean('PSF generation',name+'_auto',fallback=False))
+                var.set(config.getboolean('PSF generation',name+'_auto',fallback=True))
             if config.has_option('PSF generation','channel_rows'):
                 definitions = json.loads(config.get('PSF generation','channel_rows'))
             else:
@@ -1366,7 +1453,7 @@ class Application:
         self.cancel()
         self.loading = True
         for var in self.auto_spacing_vars.values():
-            var.set(False)
+            var.set(True)
         for group,entries in self.defaults.items():
             for name,value in entries.items():
                 self.fields[group][name][0].set(value)

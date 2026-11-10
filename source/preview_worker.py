@@ -88,14 +88,16 @@ class Log:
 def channel_settings(settings, index):
     indices = settings.get("CHANNEL_INDICES", list(range(len(settings["PSF_FILES"]))))
     filename = dict(zip(indices, settings["PSF_FILES"]))[index]
-    path = Path(filename).expanduser()
-    if not path.is_absolute():
-        path = Path(settings.get("PSF_DIR", ".")).expanduser() / path
-    try:
-        stat = path.stat()
-        fingerprint = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-    except OSError:
-        fingerprint = (str(path), None)
+    fingerprint = None
+    if filename is not None:
+        path = Path(filename).expanduser()
+        if not path.is_absolute():
+            path = Path(settings.get("PSF_DIR", ".")).expanduser() / path
+        try:
+            stat = path.stat()
+            fingerprint = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        except OSError:
+            fingerprint = (str(path), None)
     return {
         **{key: value for key, value in settings.items()
            if key not in ("TEMP_DIR", "CHANNEL_INDICES", "PSF_FILES", "FIJI_SESSION", "FORCE", "OUTPUT_CHANNEL_NAMES", "CHANNEL_ITERATIONS", "CHANNEL_REGULARIZATION", "CHANNEL_POST_PROCESSING")},
@@ -172,7 +174,7 @@ class PreviewCache:
                 self.inputs[index] = (crop_key, path)
                 del image
             fingerprint = channel_settings(settings, index)["PSF_FINGERPRINT"]
-            if self.psfs.get(index, (None,))[0] != fingerprint:
+            if fingerprint is not None and self.psfs.get(index, (None,))[0] != fingerprint:
                 psf = load_psf_volume(fingerprint[0])
                 path = self.directory / f"psf-{index}.tif"
                 tifffile.imwrite(path, np.ascontiguousarray(psf), photometric="minisblack",
@@ -202,10 +204,11 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
     missing = [index for index in selected
                if settings.get("FORCE", False) or index not in cache.deconvolved
                or cache.deconvolved[index][0] != deconvolution_key(processing_by_channel[index])]
-    if missing:
+    deconvolving = [index for index in missing if processing_by_channel[index]["PSF_FILE"] is not None]
+    if deconvolving:
         crop_xyz = [bounds[axis][1] - bounds[axis][0] for axis in "xyz"]
         geometries = []
-        for index in missing:
+        for index in deconvolving:
             with tifffile.TiffFile(cache.psfs[index][1]) as psf:
                 psf_xyz = list(reversed(psf.series[0].shape))
             geometries.append({"crop": crop_xyz, "psf": psf_xyz})
@@ -234,7 +237,11 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             projection = previous
             print(f"{label} completed in 0.0s (cached).", flush=True)
         else:
-            if index in missing:
+            if index in missing and processing["PSF_FILE"] is None:
+                result = np.array(volume[tuple(slice(*bounds[a]) for a in "zyx")], dtype=np.float32, copy=True)
+                cache.deconvolved[index] = (deconvolution_key(processing), result)
+                cache.results.pop(index, None)
+            elif index in missing:
                 result = batch.run_fiji(None, None, label,
                                        session_directory=settings["FIJI_SESSION"],
                                        input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1],

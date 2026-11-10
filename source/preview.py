@@ -97,7 +97,7 @@ class Preview(ttk.Frame):
         self.actions_shell.pack(side="bottom", fill="x", pady=(8, 0))
         self.actions = actions = ttk.Frame(self.actions_shell)
         actions.pack(fill="both", expand=True)
-        self.deconvolve_button = ttk.Button(actions, text="Deconvolve preview", command=self.deconvolve, state="disabled")
+        self.deconvolve_button = ttk.Button(actions, text="Process preview", command=self.deconvolve, state="disabled")
         self.deconvolve_button.grid(row=0, column=0, sticky="w")
         self.cancel_button = ttk.Button(actions, text="Cancel", command=lambda: self.on_cancel(), state="disabled")
         self.cancel_button.grid(row=0, column=1, sticky="w", padx=(5, 0))
@@ -185,7 +185,8 @@ class Preview(ttk.Frame):
         if self.data is None:
             return []
         return [channel["index"] for channel in self.data["channels"]
-                if self.preferences.get(str(channel["index"]), {}).get("enabled", True)]
+                if self.preferences.get(str(channel["index"]), {}).get("enabled", True)
+                or self.preferences.get(str(channel["index"]), {}).get("post_enabled", False)]
 
     def channels_changed(self):
         self.recolor()
@@ -194,7 +195,8 @@ class Preview(ttk.Frame):
 
     def channel_visible(self, index, row=0):
         return self.channel_visibility[row].get(
-            index, self.preferences.get(str(index), {}).get("enabled", True))
+            index, self.preferences.get(str(index), {}).get("enabled", True)
+            or self.preferences.get(str(index), {}).get("post_enabled", False))
 
     def display_channels(self, row, visible_only=True):
         data = self.deconvolved if row else self.data
@@ -340,8 +342,9 @@ class Preview(ttk.Frame):
         self.request_started = perf_counter()
         try:
             self.job_directory = TemporaryDirectory(prefix="preview-")
-            session = self.configure_fiji(settings["FIJI_MEMORY"])
-            settings["FIJI_SESSION"] = str(session.directory)
+            if any(settings["PSF_FILES"]):
+                session = self.configure_fiji(settings["FIJI_MEMORY"])
+                settings["FIJI_SESSION"] = str(session.directory)
             self.connection.send((revision, settings, self.job_directory.name))
             self.running = (revision, settings)
             self.busy = "deconvolve"

@@ -81,6 +81,18 @@ def load_psfs():
             raise ValueError("Select one PSF for each unique channel index")
         if not CHANNEL_INDICES:
             return [], []
+    if PSF_FILES and any(filename is None for filename in PSF_FILES):
+        channels, psfs = [], []
+        for filename in PSF_FILES:
+            if filename is None:
+                channels.append({})
+                psfs.append(None)
+            else:
+                path = Path(filename).expanduser()
+                path = path if path.is_absolute() else PSF_DIR / path
+                channels.append(read_psf_channels([path])[0])
+                psfs.append(load_psf_volume(path))
+        return channels, psfs
     paths = [Path(filename).expanduser() for filename in PSF_FILES]
     channels = read_psf_channels([path if path.is_absolute() else PSF_DIR / path for path in paths]
                                  if paths else PSF_DIR)
@@ -256,8 +268,18 @@ def post_process(result, settings):
     method = settings.get('filter', 'None')
     if method == 'None':
         return result
+    if method == 'Gaussian filter':
+        from scipy.ndimage import gaussian_filter
+        xy = float(settings['xy_pixel_size_um'])
+        sigma_um = float(settings['sigma_um'])
+        if not np.isfinite(xy) or xy <= 0 or not np.isfinite(sigma_um) or sigma_um <= 0:
+            raise ValueError('Gaussian width and XY pixel size must be finite and positive.')
+        # Smooth XY independently in each Z plane; width is the physical standard deviation.
+        sigma = sigma_um / xy
+        return gaussian_filter(np.asarray(result, dtype=np.float32),
+                               sigma=(0,) * (result.ndim - 2) + (sigma, sigma), mode='reflect')
     if method != 'Median filter':
-        raise ValueError('Select None or Median filter.')
+        raise ValueError('Select None, Median filter or Gaussian filter.')
     from scipy.ndimage import median_filter
     return median_filter(result, size=kernel_zyx(settings.get('kernel', 3)), mode='reflect')
 
@@ -278,7 +300,9 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 f"C{channel_index + 1}/{n_channels} {name}"
             )
             print(f"{label}: preparing input...", flush=True)
-            preserve = psfs[channel_index] is None
+            post = CHANNEL_POST_PROCESSING.get(str(channel_index), {})
+            filter_enabled = POST_PROCESSING and post.get('filter', 'None') != 'None'
+            preserve = psfs[channel_index] is None and not filter_enabled
             image = read_volume(reader, time_index, channel_index, preserve=preserve)
             if preserve:
                 print(f"{label}: keeping original channel", flush=True)
@@ -291,7 +315,7 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 stored = image.astype(np.uint16, copy=False)
                 saturated = 0
             else:
-                result = run_fiji(image, psfs[channel_index], label,
+                result = image if psfs[channel_index] is None else run_fiji(image, psfs[channel_index], label,
                                   iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS),
                                   regularization=CHANNEL_REGULARIZATION.get(str(channel_index), RLTV_REGULARIZATION))
                 if POST_PROCESSING:
@@ -359,10 +383,10 @@ def process_file(input_path, channels, psfs, record=None):
             record['channels'].append(dict(
                 index=index, input_name=original['name'],
                 requested_output_name=edit.get('name', assigned.get('name', original['name'])),
-                action='deconvolve' if selected_channel else 'preserve',
+                action=('deconvolve' if psfs[position] is not None else 'filter') if selected_channel else 'preserve',
                 psf_assignment_position=position,
-                iterations=CHANNEL_ITERATIONS.get(str(index), ITERATIONS) if selected_channel else None,
-                regularization=CHANNEL_REGULARIZATION.get(str(index), RLTV_REGULARIZATION) if selected_channel else None,
+                iterations=CHANNEL_ITERATIONS.get(str(index), ITERATIONS) if selected_channel and psfs[position] is not None else None,
+                regularization=CHANNEL_REGULARIZATION.get(str(index), RLTV_REGULARIZATION) if selected_channel and psfs[position] is not None else None,
                 requested_color=edit.get('color', 'original')))
         record['channel_count'] = len(originals)
     except Exception as error:
@@ -402,7 +426,7 @@ def process_file(input_path, channels, psfs, record=None):
         file_channels = [dict(channel) for channel in original_channels]
         file_psfs = [None] * n_c
         for position, index in enumerate(selected):
-            file_channels[index] = channels[position]
+            file_channels[index] = channels[position] or file_channels[index]
             file_psfs[index] = psfs[position]
         output_names = [channel["name"] for channel in file_channels]
         output_colors = [None] * n_c
@@ -509,7 +533,7 @@ def run_batch(report):
             SOURCE_DIR / 'fiji_session_worker.py', SOURCE_DIR / 'imagej_runtime.py',
             SOURCE_DIR / 'imagej/HeadlessImageJ.java', SOURCE_DIR / 'ims_writer.py',
             SOURCE_DIR / 'lib/totalvariationterm.cl')}
-    if CHANNEL_INDICES != []:
+    if CHANNEL_INDICES != [] and (not PSF_FILES or any(PSF_FILES)):
         report.data['imagej_runtime'] = runtime_info()
     channels, psfs = load_psfs()
     report.record_psfs(channels, psfs)
