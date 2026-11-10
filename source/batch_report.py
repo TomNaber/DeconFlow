@@ -7,6 +7,7 @@ from io import StringIO
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 import platform
+import re
 import runpy
 import sys
 import xml.etree.ElementTree as ET
@@ -24,11 +25,17 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def xml_text(value):
+    """Render XML 1.0-forbidden characters as readable Python-style escapes."""
+    return re.sub(r'[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]',
+                  lambda match: ascii(match[0])[1:-1], str(value))
+
+
 def append_value(parent, name, value):
     node = ET.SubElement(parent, name)
     if isinstance(value, dict):
         for key, item in value.items():
-            entry = ET.SubElement(node, 'entry', key=str(key))
+            entry = ET.SubElement(node, 'entry', key=xml_text(key))
             append_value(entry, 'value', item)
     elif isinstance(value, (list, tuple)):
         for item in value:
@@ -36,7 +43,7 @@ def append_value(parent, name, value):
     elif value is None:
         node.set('null', 'true')
     else:
-        node.text = str(value)
+        node.text = xml_text(value)
     return node
 
 
