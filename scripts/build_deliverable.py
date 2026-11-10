@@ -59,7 +59,7 @@ def main():
         resources = bundle / 'Contents/Resources' if args.platform == 'macos' else bundle
         app = resources / 'app'
         app.mkdir(parents=True)
-        for filename in ('main.py', 'app_version.py', 'README.md', 'environment.yml', 'requirements.txt'):
+        for filename in ('main.py', 'app_version.py', 'LICENSE', 'README.md', 'environment.yml', 'requirements.txt'):
             shutil.copy2(ROOT / filename, app / filename)
         shutil.copytree(ROOT / 'source', app / 'source',
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store'))
