@@ -3,7 +3,7 @@ message: "If you use this app, please cite it using the metadata in this file."
 type: software
 title: "DeconFlow: Batch Richardson–Lucy deconvolution with Gibson–Lanni point-spread functions"
 version: "1.2.0"
-date-released: "2026-11-10"
+date-released: "2026-11-11"
 authors:
   - family-names: Naber
     given-names: Tom
