@@ -257,7 +257,8 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             # Quantization sanitizes in place; preserve the unfiltered floating-point cache.
             result = cache.deconvolved[index][1].copy()
             if settings.get('POST_PROCESSING', False):
-                result = batch.post_process(result, processing["CHANNEL_POST_PROCESSING"])
+                result = batch.post_process(result, processing["CHANNEL_POST_PROCESSING"],
+                                            spacing_zyx=cache.original["spacing"])
             stored = batch.store_result(result)
             projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
                           "range": display_range(stored),

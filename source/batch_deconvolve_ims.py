@@ -152,6 +152,14 @@ def duration(seconds):
     return f"{seconds}s"
 
 
+def read_fiji_result(path, shape):
+    """Restore input axes even when ImageJ omits singleton TIFF dimensions."""
+    result = np.asarray(tifffile.imread(path), dtype=np.float32)
+    if result.size != np.prod(shape):
+        raise ValueError("Deconvolution returned an unexpected image size.")
+    return np.ascontiguousarray(result.reshape(shape))
+
+
 def run_fiji_one_shot(image, psf, label):
     started = perf_counter()
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
@@ -212,7 +220,7 @@ def run_fiji_one_shot(image, psf, label):
             raise RuntimeError(f"ImageJ exited with status {return_code}")
         if not output_tif.is_file():
             raise RuntimeError("ImageJ did not create an output TIFF")
-        result = np.asarray(tifffile.imread(output_tif), dtype=np.float32).squeeze()
+        result = read_fiji_result(output_tif, image.shape)
 
     print(f"      ImageJ RL-TV completed in {duration(perf_counter() - started)}")
     return np.ascontiguousarray(result)
@@ -240,9 +248,15 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
         directory = Path(directory)
         if input_path is None:
+            shape = image.shape
             input_path = directory / "input.tif"
             tifffile.imwrite(input_path, np.ascontiguousarray(image, dtype=np.float32),
                              photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
+        else:
+            with tifffile.TiffFile(input_path) as input_tif:
+                series = input_tif.series[0]
+                # TIFF series omit a singleton Z even for prepared ZYX inputs.
+                shape = (1, *series.shape) if series.axes == 'YX' else series.shape
         if psf_path is None:
             psf_path = directory / "psf.tif"
             tifffile.imwrite(psf_path, np.ascontiguousarray(psf, dtype=np.float32),
@@ -256,31 +270,37 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
                 input_path, psf_path, output_path, iterations,
                 regularization, RLTV_NON_CIRCULANT, progress=progress.update,
                 geometry=progress.geometry if report_geometry else None)
-            result = np.asarray(tifffile.imread(output_path), dtype=np.float32).squeeze()
+            result = read_fiji_result(output_path, shape)
             success = True
         finally:
             progress.finish(success)
     return np.ascontiguousarray(result)
 
 
-def post_process(result, settings):
-    """Filter a deconvolved ZYX volume before quantization and projection."""
+def post_process(result, settings, spacing_zyx=None):
+    """Filter ZYX data, using its voxel spacing for physical XY widths.
+
+    Legacy direct callers may omit spacing and supply xy_pixel_size_um instead.
+    """
     method = settings.get('filter', 'None')
     if method == 'None':
         return result
     if method in ('Gaussian filter', 'Bilateral filter'):
         from scipy.ndimage import gaussian_filter
-        xy = float(settings['xy_pixel_size_um'])
+        if spacing_zyx is None:
+            dy = dx = float(settings['xy_pixel_size_um'])
+        else:
+            _, dy, dx = (float(value) for value in spacing_zyx)
         sigma_um = float(settings['sigma_um'])
-        if not np.isfinite(xy) or xy <= 0 or not np.isfinite(sigma_um) or sigma_um <= 0:
+        if not all(np.isfinite(value) and value > 0 for value in (dy, dx, sigma_um)):
             raise ValueError('Filter width and XY pixel size must be finite and positive.')
         # Smooth XY independently in each Z plane; width is the physical standard deviation.
-        sigma = sigma_um / xy
+        sigma_yx = (sigma_um / dy, sigma_um / dx)
         if method == 'Bilateral filter':
             from bilateral_filter import bilateral_filter
-            return bilateral_filter(result, sigma, float(settings.get('sigma_intensity', 1000.0)))
+            return bilateral_filter(result, sigma_yx, float(settings.get('sigma_intensity', 1000.0)))
         return gaussian_filter(np.asarray(result, dtype=np.float32),
-                               sigma=(0,) * (result.ndim - 2) + (sigma, sigma), mode='reflect')
+                               sigma=(0,) * (result.ndim - 2) + sigma_yx, mode='reflect')
     if method != 'Median filter':
         raise ValueError('Select None, Median filter, Gaussian filter or Bilateral filter.')
     from scipy.ndimage import median_filter
@@ -294,6 +314,7 @@ def store_result(result):
 
 
 def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
+    spacing_zyx = voxel_size(reader)
     channel_maxima = [0] * n_channels
     for time_index in range(n_timepoints):
         for channel_index in range(n_channels):
@@ -322,7 +343,7 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                                   iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS),
                                   regularization=CHANNEL_REGULARIZATION.get(str(channel_index), RLTV_REGULARIZATION))
                 if POST_PROCESSING:
-                    result = post_process(result, CHANNEL_POST_PROCESSING.get(str(channel_index), {}))
+                    result = post_process(result, post, spacing_zyx=spacing_zyx)
                 stored = store_result(result)
                 saturated = int(np.count_nonzero(result > 65535))
             stored_max = int(stored.max())

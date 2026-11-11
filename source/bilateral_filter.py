@@ -4,9 +4,11 @@ import numpy as np
 
 
 def bilateral_filter(volume, sigma_spatial, sigma_intensity):
-    """Use spatial sigma in pixels and intensity sigma in original image units."""
-    if not np.isfinite(sigma_spatial) or not 0 < sigma_spatial <= 10:
-        raise ValueError('Bilateral spatial width must be positive and at most 10 pixels.')
+    """Use scalar or (Y, X) spatial sigmas in pixels, intensity in image units."""
+    sigma_y, sigma_x = np.broadcast_to(np.asarray(sigma_spatial, dtype=float), (2,))
+    # A fixed physical width can exceed the GUI's pixel range on finer images.
+    if not all(np.isfinite(value) and value > 0 for value in (sigma_y, sigma_x)):
+        raise ValueError('Bilateral spatial widths must be finite and positive.')
     if not np.isfinite(sigma_intensity) or sigma_intensity <= 0:
         raise ValueError('Bilateral intensity tolerance must be finite and positive.')
     data = np.array(volume, dtype=np.float32, copy=True)
@@ -14,21 +16,22 @@ def bilateral_filter(volume, sigma_spatial, sigma_intensity):
         raise ValueError('Bilateral filtering requires nonempty XY images.')
     np.nan_to_num(data, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     output = np.empty_like(data)
-    radius = int(np.ceil(3 * sigma_spatial))
+    radius_y = int(np.ceil(3 * sigma_y))
+    radius_x = int(np.ceil(3 * sigma_x))
     height, width = data.shape[-2:]
     # Work plane by plane to keep temporary memory independent of stack depth.
     for plane, filtered in zip(data.reshape(-1, height, width), output.reshape(-1, height, width)):
-        padded = np.pad(plane, radius, mode='symmetric')
+        padded = np.pad(plane, ((radius_y, radius_y), (radius_x, radius_x)), mode='symmetric')
         total = np.zeros_like(plane)
         weights = np.zeros_like(plane)
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                neighbor = padded[radius + dy:radius + dy + height,
-                                  radius + dx:radius + dx + width]
+        for dy in range(-radius_y, radius_y + 1):
+            for dx in range(-radius_x, radius_x + 1):
+                neighbor = padded[radius_y + dy:radius_y + dy + height,
+                                  radius_x + dx:radius_x + dx + width]
                 weight = (neighbor - plane) / sigma_intensity
                 np.square(weight, out=weight)
                 weight *= -0.5
-                weight -= (dx * dx + dy * dy) / (2 * sigma_spatial ** 2)
+                weight -= 0.5 * ((dx / sigma_x) ** 2 + (dy / sigma_y) ** 2)
                 np.exp(weight, out=weight)
                 total += weight * neighbor
                 weights += weight

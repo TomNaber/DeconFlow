@@ -855,24 +855,28 @@ class Application:
                 cell.columnconfigure(1,weight=0)
             kernel_minimum = max(kernel_minimum,sum(child.winfo_reqwidth() for child in width_readout.winfo_children()) + 3 + 6 + 24 + 6)
             intensity_minimum = max(intensity_minimum,intensity_caption.winfo_reqwidth() + 6 + 24 + 6)
-            def refresh_width(*args,width=width,width_um=width_um,width_entry=width_entry):
+            width_display = {'text':''}
+            def refresh_width(*args,width=width,width_um=width_um,width_entry=width_entry,width_display=width_display):
                 pixels = 10**width.get()
                 try:
                     xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
-                    formatted = f'{pixels*xy:.2f}'.rstrip('0').rstrip('.')
+                    formatted = f'{pixels*xy:.6g}'
                     width_um.set(formatted)
                     width_entry.configure(width=max(5,len(formatted)))
                 except ValueError:
                     width_um.set('')
-            def commit_width(event,width=width,width_um=width_um,refresh_width=refresh_width):
-                try:
-                    xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
-                    value = float(width_um.get())
-                    if not math.isfinite(value) or value<=0:
-                        raise ValueError()
-                    width.set(math.log10(min(10,max(.25,value/xy))))
-                except ValueError:
-                    pass
+                width_display['text'] = width_um.get()
+            def commit_width(event,width=width,width_um=width_um,refresh_width=refresh_width,width_display=width_display):
+                # Focus changes must not feed rounded display text back into the setting.
+                if width_um.get()!=width_display['text']:
+                    try:
+                        xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
+                        value = float(width_um.get())
+                        if not math.isfinite(value) or value<=0:
+                            raise ValueError()
+                        width.set(math.log10(min(10,max(.25,value/xy))))
+                    except ValueError:
+                        pass
                 refresh_width()
                 if event.keysym=='Return':
                     return 'break'
