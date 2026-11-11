@@ -281,11 +281,18 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
     return np.ascontiguousarray(result)
 
 
-def post_process(result, settings, spacing_zyx=None):
+def post_process(result, settings, spacing_zyx=None, *, backend='simpleitk'):
     """Filter ZYX data, using its voxel spacing for physical XY widths.
 
     Legacy direct callers may omit spacing and supply xy_pixel_size_um instead.
+    SimpleITK is the application default. Legacy is retained for reproducibility
+    through the comparison utility's explicit backend argument.
     """
+    if backend == 'simpleitk':
+        from simpleitk_filters import post_process as simpleitk_post_process
+        return simpleitk_post_process(result, settings, spacing_zyx)
+    if backend != 'legacy':
+        raise ValueError(f'Unknown post-processing backend: {backend}')
     method = settings.get('filter', 'None')
     if method == 'None':
         return result

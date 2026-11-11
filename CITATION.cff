@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this app, please cite it using the metadata in this file."
 type: software
 title: "DeconFlow: Batch Richardson–Lucy deconvolution with Gibson–Lanni point-spread functions"
-version: "1.1.0"
+version: "1.2.0"
 date-released: "2026-11-10"
 authors:
   - family-names: Naber

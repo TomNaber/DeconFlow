@@ -4,8 +4,8 @@ APP_NAME = "DeconFlow"
 AUTHOR = "Tom Naber"
 REPOSITORY_URL = "https://github.com/TomNaber/DeconFlow"
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # Native installer metadata requires numeric versions.
-NATIVE_VERSION = "1.1.0"
-BUILD_VERSION = "1.1.0.0"
+NATIVE_VERSION = "1.2.0"
+BUILD_VERSION = "1.2.0.0"

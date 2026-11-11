@@ -835,7 +835,7 @@ class Application:
             input_cell.grid(row=row,column=0,sticky='w',padx=3)
             enabled = pref.get('enabled',True)
             ttk.Checkbutton(input_cell,variable=post_enabled).pack(side='left')
-            ttk.Label(input_cell,text=f"C{channel['index']+1}: {pref['name'].strip()}",wraplength=160).pack(side='left')
+            ttk.Label(input_cell,text=f"C{channel['index']+1} {pref['name'].strip()}".rstrip(),wraplength=160).pack(side='left')
             choice = ttk.Combobox(self.post_panel,textvariable=method,values=('Median filter','Gaussian filter','Bilateral filter'),state='readonly',width=13)
             filter_font = tkfont.Font(root=self.post_panel,font=choice.cget('font'))
             # Tk adds native padding and the chevron outside this text width.
@@ -853,28 +853,29 @@ class Application:
             width_readout = ttk.Frame(gaussian)
             width_readout.grid(row=0,column=1,sticky='e',padx=(6,0))
             width_um = tk.StringVar()
-            width_entry = ttk.Entry(width_readout,textvariable=width_um,width=5)
+            width_entry = ttk.Entry(width_readout,textvariable=width_um,width=4)
             width_entry.pack(side='left',padx=(0,3))
             ttk.Label(width_readout,text='µm').pack(side='left')
             intensity = tk.DoubleVar(value=math.log10(min(65535,max(1,float(pref.get('post_sigma_intensity',1000.0))))))
             bilateral = ttk.Frame(self.post_panel)
             intensity_slider = ttk.Scale(bilateral,from_=0,to=math.log10(65535),variable=intensity,length=80)
             intensity_slider.grid(row=0,column=0,sticky='ew')
-            intensity_caption = ttk.Label(bilateral,width=5,anchor='e')
-            intensity_caption.grid(row=0,column=1,sticky='e',padx=(6,0))
+            intensity_value = tk.StringVar()
+            # Five digits plus the decimal separator (e.g. 999.99 or 9999.9).
+            intensity_entry = ttk.Entry(bilateral,textvariable=intensity_value,width=6)
+            intensity_entry.grid(row=0,column=1,sticky='e',padx=(6,0))
             for cell in (gaussian,bilateral):
                 cell.columnconfigure(0,weight=1,minsize=24)
                 cell.columnconfigure(1,weight=0)
             kernel_minimum = max(kernel_minimum,sum(child.winfo_reqwidth() for child in width_readout.winfo_children()) + 3 + 6 + 24 + 6)
-            intensity_minimum = max(intensity_minimum,intensity_caption.winfo_reqwidth() + 6 + 24 + 6)
+            intensity_minimum = max(intensity_minimum,intensity_entry.winfo_reqwidth() + 6 + 24 + 6)
             width_display = {'text':''}
             def refresh_width(*args,width=width,width_um=width_um,width_entry=width_entry,width_display=width_display):
                 pixels = 10**width.get()
                 try:
                     xy = self.read_field('PSF generation','XY_PIXEL_SIZE_UM')
-                    formatted = f'{pixels*xy:.6g}'
+                    formatted = f'{pixels*xy:.2f}'
                     width_um.set(formatted)
-                    width_entry.configure(width=max(5,len(formatted)))
                 except ValueError:
                     width_um.set('')
                 width_display['text'] = width_um.get()
@@ -894,13 +895,36 @@ class Application:
                     return 'break'
             width_entry.bind('<Return>',commit_width)
             width_entry.bind('<FocusOut>',commit_width)
+            intensity_display = {'text':''}
+            def refresh_intensity(intensity=intensity,intensity_value=intensity_value,intensity_display=intensity_display):
+                value = 10**intensity.get()
+                # Promote precision bands when rounding crosses their boundary.
+                decimals = 2 if round(value,2)<1000 else 1 if round(value,1)<10000 else 0
+                intensity_value.set(f'{value:.{decimals}f}')
+                intensity_display['text'] = intensity_value.get()
+            def commit_intensity(event,intensity=intensity,intensity_value=intensity_value,
+                                 intensity_display=intensity_display,refresh_intensity=refresh_intensity):
+                # Preserve full precision unless the displayed value was edited.
+                if intensity_value.get()!=intensity_display['text']:
+                    try:
+                        value = float(intensity_value.get())
+                        if not math.isfinite(value) or value<=0:
+                            raise ValueError()
+                        intensity.set(math.log10(min(65535,max(1,value))))
+                    except ValueError:
+                        pass
+                refresh_intensity()
+                if event.keysym=='Return':
+                    return 'break'
+            intensity_entry.bind('<Return>',commit_intensity)
+            intensity_entry.bind('<FocusOut>',commit_intensity)
             xy_var = self.fields['PSF generation']['XY_PIXEL_SIZE_UM'][0]
             trace = xy_var.trace_add('write',refresh_width)
             gaussian.bind('<Destroy>',lambda event,frame=gaussian,var=xy_var,trace=trace:
                           var.trace_remove('write',trace) if event.widget is frame else None)
             def update_controls(method=method,size=size,gaussian=gaussian,slider=slider,width_entry=width_entry,
                                 bilateral=bilateral,intensity_slider=intensity_slider,
-                                intensity=intensity,intensity_caption=intensity_caption,
+                                intensity_entry=intensity_entry,refresh_intensity=refresh_intensity,
                                 choice=choice,enabled=enabled,post_enabled=post_enabled,row=row):
                 active = post_enabled.get()
                 choice.configure(state='readonly' if active else 'disabled')
@@ -908,7 +932,8 @@ class Application:
                 slider.configure(state='normal' if active else 'disabled')
                 width_entry.configure(state='normal' if active else 'disabled')
                 intensity_slider.configure(state='normal' if active else 'disabled')
-                intensity_caption.configure(text=f'{10**intensity.get():.0f}')
+                intensity_entry.configure(state='normal' if active else 'disabled')
+                refresh_intensity()
                 if method.get()=='Bilateral filter':
                     bilateral.grid(row=row,column=3,sticky='ew',padx=3,pady=3)
                 else:
