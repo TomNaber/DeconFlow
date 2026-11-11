@@ -35,8 +35,9 @@ NAMED_COLORS = {
 def parse_color(value):
     if isinstance(value, str):
         color = value.strip().lower()
-        if color in NAMED_COLORS:
-            return NAMED_COLORS[color]
+        for name, rgb in NAMED_COLORS.items():
+            if color == name.lower():
+                return rgb
         if len(color) == 7 and color.startswith("#"):
             try:
                 return tuple(

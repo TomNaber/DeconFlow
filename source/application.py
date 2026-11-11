@@ -238,6 +238,8 @@ class Application:
         actions.grid(row=2,column=0,sticky='ew',padx=side_padding)
         self.run_button = ttk.Button(actions,text='Run batch processing',command=lambda:self.request('batch'))
         self.run_button.pack(side='left')
+        self.run_single_button = ttk.Button(actions,text='Run single',command=lambda:self.request('batch',single=True))
+        self.run_single_button.pack(side='left',padx=(5,0))
         self.cancel_button = ttk.Button(actions,text='Cancel',command=self.cancel,state='disabled')
         self.cancel_button.pack(side='left',padx=5)
         self.restore_button = ttk.Button(actions,text='Restore defaults',command=self.restore_defaults)
@@ -1078,7 +1080,7 @@ class Application:
     def preview_settings(self):
         return self.deconvolution_settings(self.preview.selected_channels)
 
-    def request(self,kind,automatic=False):
+    def request(self,kind,automatic=False,single=False):
         if kind in ('view','batch'):
             self.cancel_psf_sync()
         if self.batch_locked:
@@ -1086,6 +1088,9 @@ class Application:
         try:
             if self.refresh_job:
                 self.refresh_input()
+            selected_path = self.preview.selected_path if single else None
+            if single and (selected_path is None or not selected_path.is_file()):
+                raise ValueError('Select an existing image in the preview to run single-image processing.')
             indices = self.preview.selected_channels if kind=='preview' else (self.enabled_indices() if kind=='view' else self.processing_indices())
             if not indices:
                 raise ValueError('Select at least one input channel.')
@@ -1100,6 +1105,8 @@ class Application:
                     return
                 self.fields['Deconvolution']['OUTPUT_DIR'][0].set(folder)
             settings = None if kind=='view' else self.deconvolution_settings(indices,batch=kind=='batch',require_psfs=False)
+            if single:
+                settings['INPUT_FILES'] = [str(selected_path.resolve())]
             if kind=='batch' and generator and self.export_enabled.get() and not self.export_folder.get().strip():
                 raise ValueError('Select a folder for exporting generated PSFs.')
             request = dict(kind=kind,automatic=automatic,revision=self.revision,preview_revision=self.preview.revision,
@@ -1229,7 +1236,8 @@ class Application:
         self.process = child
         self.running = dict(settings=settings,stage=stage,request=request,waiters={request['kind']:request})
         self.cancelled = False
-        self.log('\nGenerating Gibson-Lanni PSFs…\n' if stage=='generate' else '\nStarting batch deconvolution…\n')
+        self.log('\nGenerating Gibson-Lanni PSFs…\n' if stage=='generate' else
+                 ('\nStarting single-image deconvolution…\n' if settings.get('INPUT_FILES') is not None else '\nStarting batch deconvolution…\n'))
         def read():
             import codecs
             decoder = codecs.getincrementaldecoder('utf-8')('replace')
@@ -1348,7 +1356,9 @@ class Application:
         self.update_channel_adjustment()
         indices = self.enabled_indices()
         ready = self.can_resolve(indices)
-        self.run_button.configure(state='normal' if self.can_resolve(self.processing_indices()) and not self.batch_locked else 'disabled')
+        processing_ready = self.can_resolve(self.processing_indices()) and not self.batch_locked
+        self.run_button.configure(state='normal' if processing_ready else 'disabled')
+        self.run_single_button.configure(state='normal' if processing_ready and self.preview.selected_path else 'disabled')
         self.psf_view.view_button.configure(state='normal' if ready and not self.batch_locked and not self.view_loading else 'disabled')
         self.psf_view.sync_button.configure(state='disabled' if self.batch_locked else 'normal')
         busy = self.psf_sync_job is not None or self.process is not None or self.export_task is not None or self.view_loading or self.preview.busy=='deconvolve' or self.preview.pending is not None or self.preview.sync_job is not None
