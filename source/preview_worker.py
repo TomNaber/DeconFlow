@@ -13,6 +13,7 @@ import numpy as np
 
 from source.channel_metadata import read_channels, text
 from source.psf_channels import load_psf_volume
+from source.console_progress import ProgressLine
 
 
 def display_range(volume):
@@ -219,9 +220,9 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             shapes = list(dict.fromkeys(tuple(item[field]) for item in geometries))
             return " or ".join(" x ".join(str(n) for n in shape) for shape in shapes)
 
-        cache_status = "new" if any(item["cache"] == "new" for item in geometries) else "reused"
-        print(f"Crop XYZ {dimensions('crop')}. PSF XYZ {dimensions('psf')}. "
-              f"Padded FFT XYZ {dimensions('fft')}. FFT cache {cache_status}.", flush=True)
+        if any(item["cache"] == "new" for item in geometries):
+            print(f"\nGenerating FFT cache. Crop XYZ {dimensions('crop')}. "
+                  f"PSF XYZ {dimensions('psf')}. Padded FFT XYZ {dimensions('fft')}.", flush=True)
     initialized()
     projections = []
     public_settings = {key: value for key, value in settings.items() if key not in ("FIJI_SESSION", "FORCE")}
@@ -231,11 +232,13 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
         volume, channel = cache.volumes[index]
         output_name = settings.get("OUTPUT_CHANNEL_NAMES", {}).get(str(index), channel["name"])
         label = f"Preview C{position}/{len(selected)} {output_name}"
+        channel_started = perf_counter()
+        timings = {}
         processing = processing_by_channel[index]
         previous = cache.results.get(index)
         if not settings.get("FORCE", False) and previous is not None and previous["processing"] == processing:
             projection = previous
-            print(f"{label} completed in 0.0s (cached).", flush=True)
+            print(f"{label}: reusing cached preview.", flush=True)
         else:
             if index in missing and processing["PSF_FILE"] is None:
                 result = np.array(volume[tuple(slice(*bounds[a]) for a in "zyx")], dtype=np.float32, copy=True)
@@ -245,6 +248,7 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
                 result = batch.run_fiji(None, None, label,
                                        session_directory=settings["FIJI_SESSION"],
                                        input_path=cache.inputs[index][1], psf_path=cache.psfs[index][1],
+                                       timings=timings, total_started=channel_started,
                                        report_geometry=False, iterations=processing["ITERATIONS"],
                                        regularization=processing["RLTV_REGULARIZATION"])
                 shape = tuple(bounds[a][1] - bounds[a][0] for a in "zyx")
@@ -255,16 +259,22 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
             else:
                 print(f"{label}: updating post-processing (cached deconvolution).", flush=True)
             # Quantization sanitizes in place; preserve the unfiltered floating-point cache.
-            result = cache.deconvolved[index][1].copy()
-            if settings.get('POST_PROCESSING', False):
-                result = batch.post_process(result, processing["CHANNEL_POST_PROCESSING"],
-                                            spacing_zyx=cache.original["spacing"])
-            stored = batch.store_result(result)
-            projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
-                          "range": display_range(stored),
-                          "processing": processing}
-            cache.results[index] = projection
-            del result, stored
+            post = processing["CHANNEL_POST_PROCESSING"]
+            activity = f"Post-processing ({post['filter']})" if settings.get('POST_PROCESSING', False) and post.get('filter', 'None') != 'None' else 'Copying result'
+            with ProgressLine(label, activity, delay=0 if activity.startswith('Post-processing') else 1,
+                              timings=timings, total_started=channel_started).running():
+                result = cache.deconvolved[index][1].copy()
+                if settings.get('POST_PROCESSING', False):
+                    result = batch.post_process(result, post, spacing_zyx=cache.original["spacing"])
+            with ProgressLine(label, 'Converting output and building preview projections',
+                              timings=timings, total_started=channel_started).running():
+                stored = batch.store_result(result)
+                projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
+                              "range": display_range(stored), "processing": processing}
+                cache.results[index] = projection
+                del result, stored
+            elapsed = perf_counter() - channel_started
+            print(f'{label} channel completed in {elapsed:.1f}s total.', flush=True)
         projections.append({**projection, "name": output_name})
     return {**cache.original, "channels": projections, "settings": public_settings, "crop": bounds}
 
@@ -300,7 +310,10 @@ def run(connection, path, cache_directory):
                 continue
             if request[0] == "project_original":
                 _, bounds, axes = request
-                connection.send(("original_projection", (bounds, axes, cache.project_original(bounds, axes))))
+                with redirect_stdout(Log(connection)), redirect_stderr(Log(connection)):
+                    with ProgressLine('Preview', 'Building original projections', delay=1).running():
+                        projections = cache.project_original(bounds, axes)
+                connection.send(("original_projection", (bounds, axes, projections)))
                 continue
             if request[0] == "prepare":
                 _, revision, settings = request

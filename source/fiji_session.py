@@ -32,7 +32,7 @@ def atomic_json(path, value):
 
 
 def console_log(value):
-    print(value, end="", flush=True)
+    print("\n" + value if value.startswith("ImageJ ready") else value, end="", flush=True)
 
 
 class FijiSession:

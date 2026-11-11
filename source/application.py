@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from time import perf_counter
 import tkinter as tk
 import webbrowser
 from tkinter import ttk, filedialog, messagebox
@@ -128,12 +129,21 @@ class Application:
         self.preview.request_psfs = lambda automatic=False:self.request('preview', automatic)
         self.preview.on_cancel = self.cancel
         self.preview.on_activity = self.update_activity
-        self.preview.on_log = self.log
+        self.preview.on_log = self.append_log
+        self.preview.on_render_log = self.render_log
         self.window.protocol('WM_DELETE_WINDOW', self.close)
         self.poll_job = self.window.after(100, self.poll)
+        self.initialize_fiji()
         self.update_activity()
         from source.app_updates import UpdateController
         self.updater = UpdateController(self)
+
+    def initialize_fiji(self):
+        try:
+            memory = memory_argument(self.read_field('Deconvolution', 'FIJI_MEMORY'))
+            self.preview.configure_fiji(memory)
+        except Exception as error:
+            self.log(f'ImageJ initialization failed: {error}\n')
 
     def build(self):
         w = self.window
@@ -1109,13 +1119,12 @@ class Application:
                 settings['INPUT_FILES'] = [str(selected_path.resolve())]
             if kind=='batch' and generator and self.export_enabled.get() and not self.export_folder.get().strip():
                 raise ValueError('Select a folder for exporting generated PSFs.')
-            request = dict(kind=kind,automatic=automatic,revision=self.revision,preview_revision=self.preview.revision,
+            request = dict(kind=kind,automatic=automatic,started=perf_counter(),revision=self.revision,preview_revision=self.preview.revision,
                            generator=generator,settings=settings,indices=indices,psf_revision=self.psf_revision)
             if kind=='batch':
                 settings['PSF_SOURCE'] = 'internal' if generator else 'external'
                 settings['PSF_GENERATION_PARAMETERS'] = generator
                 self.preview.cancel_deconvolution()
-                self.preview.stop_fiji()
                 self.set_batch_locked(True)
             if self.process:
                 if not self.cancelled and self.running['request']['generator']==generator and self.running['stage']=='generate':
@@ -1230,6 +1239,9 @@ class Application:
         self.update_activity()
 
     def launch(self,settings,stage,request):
+        if stage == 'batch':
+            session = self.preview.configure_fiji(settings['FIJI_MEMORY'])
+            settings = dict(settings, FIJI_SESSION=str(session.directory))
         child = subprocess.Popen([sys.executable,'-u',str(ROOT/'main.py'),'--worker'],stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',
                                  errors='replace',cwd=ROOT,**process_session_options())
@@ -1259,6 +1271,8 @@ class Application:
 
     def stop_worker(self):
         if self.process:
+            if self.running and self.running['stage'] == 'batch':
+                self.preview.stop_fiji()
             self.cancelled = True
             child = self.process
             if child.poll() is None:
@@ -1416,7 +1430,8 @@ class Application:
                             for request in running['waiters'].values():
                                 self.continue_request(request,catalog)
                         else:
-                            self.log('Batch finished successfully.\n')
+                            elapsed = perf_counter() - running['request']['started']
+                            self.log(f'Run finished successfully in {elapsed:.1f}s total (including preparation and saving).\n')
                             self.set_batch_locked(False)
                     else:
                         self.log('Job cancelled.\n' if cancelled else f'Job failed (exit code {event[2]}). See output above.\n')
@@ -1434,6 +1449,11 @@ class Application:
                         self.error(str(error))
                 self.update_activity()
         self.poll_job = self.window.after(100,self.poll)
+
+    def render_log(self,value):
+        # Paint the stage message before doing synchronous Tk image rendering.
+        self.append_log(value)
+        self.console.update_idletasks()
 
     def log(self,value):
         self.events.put(value)

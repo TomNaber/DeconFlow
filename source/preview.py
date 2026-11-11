@@ -48,6 +48,7 @@ class Preview(ttk.Frame):
         self.psfs_ready = lambda indices: False
         self.on_activity = lambda: None
         self.on_log = lambda value: None
+        self.on_render_log = lambda value: self.on_log(value)
         self.folder = None
         self.filename = tk.StringVar()
         self.process = None
@@ -420,8 +421,7 @@ class Preview(ttk.Frame):
             while True:
                 generation, (kind, value) = self.events.get_nowait()
                 if kind == "session_log":
-                    if not (self.initializing and value.startswith("ImageJ ready")):
-                        self.on_log(value)
+                    self.on_log("\n" + value if value.startswith("ImageJ ready") else value)
                     continue
                 if generation != self.generation:
                     continue
@@ -459,7 +459,11 @@ class Preview(ttk.Frame):
                         if kind == "deconvolved":
                             # Replace the preview atomically once every selected channel is ready.
                             self.deconvolved = result
+                            render_started = perf_counter()
+                            self.on_render_log("Rendering preview…\n")
                             self.recolor()
+                            self.update_idletasks()
+                            self.on_render_log(f"Preview rendering completed in {perf_counter() - render_started:.1f}s.\n")
                             self.on_log(f"Preview finished in {perf_counter() - self.request_started:.0f}s.\n")
                         else:
                             self.stop_fiji()

@@ -46,6 +46,7 @@ CHANNEL_POST_PROCESSING = {}
 RLTV_REGULARIZATION = 0.0001
 RLTV_NON_CIRCULANT = True
 FIJI_MEMORY = "12g"
+FIJI_SESSION = None
 OVERWRITE = False
 CHANNEL_EDITS = {}
 PSF_FILES = []
@@ -231,12 +232,14 @@ _session = None
 
 
 def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_path=None,
-             report_geometry=True, iterations=None, regularization=None):
+             report_geometry=True, iterations=None, regularization=None, timings=None, total_started=None):
     """Reuse ImageJ; callers may supply immutable, already prepared TIFFs."""
     iterations = ITERATIONS if iterations is None else iterations
     regularization = RLTV_REGULARIZATION if regularization is None else regularization
     from fiji_session import FijiClient, FijiSession
     global _session
+    if session_directory is None:
+        session_directory = FIJI_SESSION
     if session_directory is None:
         key = str(FIJI_MEMORY)
         if (_session is None or _session.closed or _session.process.poll() is not None
@@ -248,33 +251,33 @@ def run_fiji(image, psf, label, session_directory=None, input_path=None, psf_pat
         session_directory = _session.directory
     with TemporaryDirectory(prefix="fiji-rltv-", dir=TEMP_DIR) as directory:
         directory = Path(directory)
-        if input_path is None:
-            shape = image.shape
-            input_path = directory / "input.tif"
-            tifffile.imwrite(input_path, np.ascontiguousarray(image, dtype=np.float32),
-                             photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
-        else:
-            with tifffile.TiffFile(input_path) as input_tif:
-                series = input_tif.series[0]
-                # TIFF series omit a singleton Z even for prepared ZYX inputs.
-                shape = (1, *series.shape) if series.axes == 'YX' else series.shape
-        if psf_path is None:
-            psf_path = directory / "psf.tif"
-            tifffile.imwrite(psf_path, np.ascontiguousarray(psf, dtype=np.float32),
-                             photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
-        output_path = directory / "output.tif"
-        progress = ProgressLine(label)
-        progress.update()
-        success = False
-        try:
+        with ProgressLine(label, 'Preparing ImageJ input', delay=1, timings=timings,
+                          total_started=total_started).running():
+            if input_path is None:
+                shape = image.shape
+                input_path = directory / "input.tif"
+                tifffile.imwrite(input_path, np.ascontiguousarray(image, dtype=np.float32),
+                                 photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
+            else:
+                with tifffile.TiffFile(input_path) as input_tif:
+                    series = input_tif.series[0]
+                    # TIFF series omit a singleton Z even for prepared ZYX inputs.
+                    shape = (1, *series.shape) if series.axes == 'YX' else series.shape
+            if psf_path is None:
+                psf_path = directory / "psf.tif"
+                tifffile.imwrite(psf_path, np.ascontiguousarray(psf, dtype=np.float32),
+                                 photometric="minisblack", metadata={"axes": "ZYX"}, bigtiff=True)
+            output_path = directory / "output.tif"
+            FijiClient(session_directory).wait_ready()
+        progress = ProgressLine(label, timings=timings, total_started=total_started)
+        with progress.running():
             FijiClient(session_directory).run(
                 input_path, psf_path, output_path, iterations,
-                regularization, RLTV_NON_CIRCULANT, progress=progress.update,
+                regularization, RLTV_NON_CIRCULANT,
                 geometry=progress.geometry if report_geometry else None)
+        with ProgressLine(label, 'Reading deconvolved result', delay=1, timings=timings,
+                          total_started=total_started).running():
             result = read_fiji_result(output_path, shape)
-            success = True
-        finally:
-            progress.finish(success)
     return np.ascontiguousarray(result)
 
 
@@ -314,7 +317,7 @@ def store_result(result):
     return np.clip(np.rint(result), 0, 65535).astype(np.uint16)
 
 
-def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
+def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=None):
     spacing_zyx = voxel_size(reader)
     channel_maxima = [0] * n_channels
     for time_index in range(n_timepoints):
@@ -324,11 +327,14 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 f"T{time_index + 1}/{n_timepoints} "
                 f"C{channel_index + 1}/{n_channels} {name}"
             )
-            print(f"{label}: preparing input...", flush=True)
+            channel_started = perf_counter()
+            timings = {}
             post = CHANNEL_POST_PROCESSING.get(str(channel_index), {})
             filter_enabled = POST_PROCESSING and post.get('filter', 'None') != 'None'
             preserve = psfs[channel_index] is None and not filter_enabled
-            image = read_volume(reader, time_index, channel_index, preserve=preserve)
+            with ProgressLine(label, 'Reading input', delay=1, timings=timings,
+                              total_started=channel_started).running():
+                image = read_volume(reader, time_index, channel_index, preserve=preserve)
             if preserve:
                 print(f"{label}: keeping original channel", flush=True)
                 # IMS output is uint16. Widen uint8 losslessly, but never silently
@@ -341,18 +347,25 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 saturated = 0
             else:
                 result = image if psfs[channel_index] is None else run_fiji(image, psfs[channel_index], label,
+                                  timings=timings, total_started=channel_started,
                                   iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS),
                                   regularization=CHANNEL_REGULARIZATION.get(str(channel_index), RLTV_REGULARIZATION))
-                if POST_PROCESSING:
-                    result = post_process(result, post, spacing_zyx=spacing_zyx)
-                stored = store_result(result)
-                saturated = int(np.count_nonzero(result > 65535))
-            stored_max = int(stored.max())
-            channel_maxima[channel_index] = max(
-                channel_maxima[channel_index], stored_max
-            )
-            output[time_index, channel_index] = stored
-            output.flush()
+                if filter_enabled:
+                    with ProgressLine(label, f"Post-processing ({post['filter']})",
+                                      timings=timings, total_started=channel_started).running():
+                        result = post_process(result, post, spacing_zyx=spacing_zyx)
+                with ProgressLine(label, 'Converting output', delay=1, timings=timings,
+                                  total_started=channel_started).running():
+                    stored = store_result(result)
+                    saturated = int(np.count_nonzero(result > 65535))
+            with ProgressLine(label, 'Writing channel output', delay=1, timings=timings,
+                              total_started=channel_started).running():
+                stored_max = int(stored.max())
+                channel_maxima[channel_index] = max(
+                    channel_maxima[channel_index], stored_max
+                )
+                output[time_index, channel_index] = stored
+                output.flush()
             if saturated:
                 print(
                     f"      WARNING: {saturated:,} voxels "
@@ -360,6 +373,13 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels):
                 )
             del image, result, stored
             gc.collect()
+            elapsed = perf_counter() - channel_started
+            timings['Other / cleanup'] = max(0.0, elapsed - sum(timings.values()))
+            print(f'{label} channel completed in {elapsed:.1f}s total.', flush=True)
+            if record is not None:
+                record.setdefault('channel_timings', []).append(dict(
+                    time_index=time_index, channel_index=channel_index,
+                    total_seconds=elapsed, stages_seconds=timings))
     return [(0.0, float(maximum or 1)) for maximum in channel_maxima]
 
 
@@ -437,7 +457,9 @@ def process_file(input_path, channels, psfs, record=None):
             record.update(status="completed", action="copied unchanged")
             print(f"Copied unchanged (no channels selected): {output_path.name}")
             return
-        reader = open_ims(input_path)
+        with ProgressLine(input_path.name, 'Opening image', delay=1,
+                          timings=record.setdefault('file_stages_seconds', {})).running():
+            reader = open_ims(input_path)
         shape = tuple(int(getattr(reader.dims, axis)) for axis in "TCZYX")
         n_t, n_c, _, _, _ = shape
         selected = list(range(n_c)) if CHANNEL_INDICES is None else CHANNEL_INDICES
@@ -471,30 +493,31 @@ def process_file(input_path, channels, psfs, record=None):
         print(f"  Source channels: {reader.channel_names}")
 
         output = np.memmap(array_path, mode="w+", dtype=np.uint16, shape=shape)
-        channel_ranges = deconvolve(reader, output, file_channels, file_psfs, n_t, n_c)
+        channel_ranges = deconvolve(reader, output, file_channels, file_psfs, n_t, n_c, record=record)
         output.flush()
         reader = None
         gc.collect()
 
-        print(f"  Writing native IMS: {output_path.name}")
-        write_imaris(
-            output,
-            partial_path,
-            channel_names=output_names,
-            channel_colors=output_colors,
-            channel_ranges=channel_ranges,
-            excitation_wavelengths_nm=[
-                channel.get("excitation_nm") for channel in file_channels
-            ],
-            emission_wavelengths_nm=[
-                channel.get("emission_nm") for channel in file_channels
-            ],
-            source_ims=input_path,
-        )
-        excluded = [index for index in range(n_c) if index not in selected]
-        preserve_original_channel_metadata(input_path, partial_path, excluded)
-        output_path.unlink(missing_ok=True)
-        partial_path.replace(output_path)
+        with ProgressLine(output_path.name, 'Writing native IMS',
+                          timings=record.setdefault('file_stages_seconds', {})).running():
+            write_imaris(
+                output,
+                partial_path,
+                channel_names=output_names,
+                channel_colors=output_colors,
+                channel_ranges=channel_ranges,
+                excitation_wavelengths_nm=[
+                    channel.get("excitation_nm") for channel in file_channels
+                ],
+                emission_wavelengths_nm=[
+                    channel.get("emission_nm") for channel in file_channels
+                ],
+                source_ims=input_path,
+            )
+            excluded = [index for index in range(n_c) if index not in selected]
+            preserve_original_channel_metadata(input_path, partial_path, excluded)
+            output_path.unlink(missing_ok=True)
+            partial_path.replace(output_path)
         record.update(status="completed")
         print(f"Finished: {output_path.name}")
     finally:
@@ -508,6 +531,7 @@ def process_file(input_path, channels, psfs, record=None):
 
 
 def main():
+    batch_started = perf_counter()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     names = ('INPUT_DIR', 'INPUT_FILES', 'OUTPUT_DIR', 'TEMP_DIR', 'PSF_DIR', 'PSF_FILES',
              'PSF_SOURCE', 'ITERATIONS', 'CHANNEL_ITERATIONS', 'CHANNEL_REGULARIZATION',
@@ -536,6 +560,8 @@ def main():
                 if ready.is_file():
                     report.data.setdefault('imagej_runtime', {}).update(json.loads(ready.read_text()))
                 report.data['imagej_diagnostics'] = list(_session.diagnostics)
+            report.data['total_seconds'] = perf_counter() - batch_started
+            print(f"Batch total: {report.data['total_seconds']:.1f}s.", flush=True)
             report.data['finished_utc'] = timestamp()
             report.save()
 
@@ -571,6 +597,7 @@ def run_batch(report):
     print(f"Output: {OUTPUT_DIR}")
     failed = []
     for input_path, record in zip(input_files, report.data['files']):
+        file_started = perf_counter()
         record.update(status='running', started_utc=timestamp())
         report.save()
         try:
@@ -586,6 +613,11 @@ def run_batch(report):
             record['status'] = 'interrupted'
             raise
         finally:
+            record['total_seconds'] = perf_counter() - file_started
+            stages = record.setdefault('file_stages_seconds', {})
+            stages['Channels'] = sum(item['total_seconds'] for item in record.get('channel_timings', []))
+            stages['Other / cleanup'] = max(0.0, record['total_seconds'] - sum(stages.values()))
+            print(f"{input_path.name} total: {record['total_seconds']:.1f}s ({record['status']}).", flush=True)
             record['finished_utc'] = timestamp()
             report.save()
     if failed:
