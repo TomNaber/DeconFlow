@@ -25,7 +25,7 @@ class ProgressLine:
             if self.last_update is not None and now - self.last_update < 1:
                 return
             self.last_update = now
-            total = f' Channel total {now - self.total_started:.1f}s.' if self.total_started is not None else ''
+            total = f' Channel total {now - self.total_started:.0f}s.' if self.total_started is not None else ''
             self.write(f'{self.label} {self.activity}. {now - self.started:.0f}s elapsed.{total}')
 
     @contextmanager
