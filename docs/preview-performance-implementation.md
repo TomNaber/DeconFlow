@@ -91,3 +91,14 @@ unnecessary downstream deconvolution. Only missing or changed channels are gener
 completed results replace that channel's single cached PSF. Display names do not
 invalidate PSF voxels. Changing the selected input stack clears the PSF session's
 channel entries, and completed/cancelled generation directories are removed.
+
+
+### Preserve results while editing the crop
+
+Dragging or resizing the crop no longer clears the displayed deconvolution or sends
+`clear_result` to the preview worker. With sync disabled, the last result stays
+visible at its original crop coordinates until another preview is requested. With
+sync enabled, releasing the crop schedules the usual automatic preview; successful
+completion replaces the display. Input preparation may update the staged crop TIFF,
+but deconvolved and processed cache entries are replaced only by preview computation.
+Moving away from a crop and back without computing retains its cached results.

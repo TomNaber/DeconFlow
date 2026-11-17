@@ -611,12 +611,8 @@ class Preview(ttk.Frame):
                 drag["changed"] = True
                 self.revision += 1
                 self.sync_changed()
-                self.deconvolved = None
-                if self.connection is not None:
-                    try:
-                        self.connection.send("clear_result")
-                    except (OSError, EOFError):
-                        pass
+                # Keep the displayed crop and cached result until a new preview
+                # completes. Sync schedules that run on release; manual mode waits.
                 self.recolor()
                 self.on_activity()
             self.schedule_draw()
