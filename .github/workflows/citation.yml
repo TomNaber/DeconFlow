@@ -37,7 +37,7 @@ jobs:
           date = git('log', '-1', '--format=%cs', tag)
           url = f'https://github.com/TomNaber/Imaris-Batch-Deconvolution/releases/tag/{tag}'
           citation = (f'> Naber, T. ({date[:4]}). *DeconFlow: Batch Richardson–Lucy '
-                      f'deconvolution with Gibson–Lanni point-spread functions* (Version {version}) '
+                      f'deconvolution with Aguet vectorial point-spread functions* (Version {version}) '
                       f'[Computer software]. {url}')
           readme = Path('README.md')
           content, count = re.subn(

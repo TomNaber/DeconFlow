@@ -43,7 +43,7 @@ def main():
                     'import sys; sys.path.insert(0, "source"); '
                     'import tkinter, psfmodels, napari_vipp_imaris; '
                     'import source.preview, source.batch_deconvolve_ims; '
-                    'import source.generate_gibson_lanni_psfs'], cwd=ROOT, check=True)
+                    'import source.generate_vectorial_psfs'], cwd=ROOT, check=True)
     imagej = install_imagej()  # Also installs Java into this prefix when missing.
     java = java_executable(allow_external=False)
     java_home = java.parent.parent.relative_to(prefix)

@@ -63,13 +63,14 @@ def main():
                 nx=PSF_SIZE_XY,
                 dxy=XY_PIXEL_SIZE_UM,
                 dz=Z_STEP_UM,
-                pz=IMAGING_DEPTH_UM,
                 pinhole_au=PINHOLE_AIRY_UNITS,
                 NA=NUMERICAL_APERTURE,
                 ex_wvl=channel["excitation_nm"] / 1000.0,
                 em_wvl=channel["emission_nm"] / 1000.0,
-                ns=SPECIMEN_RI,
                 ni=IMMERSION_RI_ACTUAL,
+                model="vectorial",
+                pz=IMAGING_DEPTH_UM,
+                ns=SPECIMEN_RI,
                 ni0=IMMERSION_RI_DESIGN,
                 tg=COVERSLIP_THICKNESS_ACTUAL_UM,
                 tg0=COVERSLIP_THICKNESS_DESIGN_UM,
@@ -77,7 +78,6 @@ def main():
                 ng0=COVERSLIP_RI_DESIGN,
                 ti0=OBJECTIVE_WORKING_DISTANCE_UM,
                 oversample_factor=OVERSAMPLE_FACTOR,
-                model="scalar",
             )
             psf = np.asarray(psf, dtype=np.float32)
             np.nan_to_num(psf, copy=False, nan=0.0, posinf=0.0, neginf=0.0)

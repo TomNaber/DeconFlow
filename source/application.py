@@ -165,7 +165,7 @@ class Application:
         notebook_padding = w.tk.splitlist(ttk.Style(w).lookup('TNotebook','padding') or '0')
         side_padding = (notebook_padding[0], notebook_padding[2] if len(notebook_padding)>2 else notebook_padding[0])
         page = ttk.Frame(outer)
-        outer.add(page,text='Richardson-Lucy deconvolution with Gibson-Lanni PSF')
+        outer.add(page,text='Richardson-Lucy deconvolution')
         page.columnconfigure(0,weight=1)
         page.rowconfigure(0,weight=1)
         self.settings_canvas = tk.Canvas(page,width=565,height=1,highlightthickness=0,borderwidth=0)
@@ -303,19 +303,28 @@ class Application:
             messagebox.showinfo('GitHub', REPOSITORY_URL, parent=self.window)
 
     def show_about(self):
+        credits = (
+            f'Created by {AUTHOR}\nBatch deconvolution for microscopy\n{REPOSITORY_URL}\n\n'
+            'PSF: Aguet, F., Geissbühler, S., Märki, I., Lasser, T., & Unser, M. (2009). '
+            'Super-resolution orientation estimation and localization of fluorescent dipoles '
+            'using 3-D steerable filters. Optics Express, 17(8), 6829.\n'
+            'https://doi.org/10.1364/OE.17.006829\n\n'
+            'Deconvolution: Haase, R., Royer, L. A., Steinbach, P., Schmidt, D., Dibrov, A., '
+            'Schmidt, U., Weigert, M., Maghelli, N., Tomancak, P., Jug, F., & Myers, E. W. (2020). '
+            'CLIJ: GPU-accelerated image processing for everyone. Nature Methods, 17(1), 5–6.\n'
+            'https://doi.org/10.1038/s41592-019-0650-1'
+        )
         if sys.platform == 'darwin':
             from AppKit import NSApplication, NSAttributedString
             NSApplication.sharedApplication().orderFrontStandardAboutPanelWithOptions_({
                 'ApplicationName': APP_NAME,
                 'ApplicationVersion': __version__,
                 'Version': '',
-                'Credits': NSAttributedString.alloc().initWithString_(
-                    f'Created by {AUTHOR}\nBatch deconvolution for microscopy\n{REPOSITORY_URL}'),
+                'Credits': NSAttributedString.alloc().initWithString_(credits),
             })
         else:
             messagebox.showinfo(f'About {APP_NAME}',
-                                f'{APP_NAME}\nVersion {__version__}\n\nCreated by {AUTHOR}\n'
-                                f'Batch deconvolution for microscopy\n\n{REPOSITORY_URL}',
+                                f'{APP_NAME}\nVersion {__version__}\n\n{credits}',
                                 parent=self.window)
 
     def schedule_viewer_layout(self,event=None):
@@ -1273,7 +1282,7 @@ class Application:
         self.process = child
         self.running = dict(settings=settings,stage=stage,request=request,waiters={request['kind']:request})
         self.cancelled = False
-        self.log('\nGenerating Gibson-Lanni PSFs…\n' if stage=='generate' else
+        self.log('\nGenerating PSFs…\n' if stage=='generate' else
                  ('\nStarting single-image deconvolution…\n' if settings.get('INPUT_FILES') is not None else '\nStarting batch deconvolution…\n'))
         def read():
             import codecs

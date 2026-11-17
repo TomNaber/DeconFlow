@@ -41,7 +41,7 @@ class PSFSession:
         return None
 
     def worker_settings(self, settings):
-        return dict(settings, module="generate_gibson_lanni_psfs",
+        return dict(settings, module="generate_vectorial_psfs",
                     OUTPUT_DIR=mkdtemp(prefix="generation-", dir=self.directory.name),
                     OUTPUT_IS_TEMPORARY=True, OVERWRITE=True)
 

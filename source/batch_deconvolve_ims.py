@@ -588,7 +588,7 @@ def run_batch(report):
             raise FileNotFoundError(path)
     report.data['source_sha256'] = {
         str(path.relative_to(ROOT)): sha256(path) for path in (
-            Path(__file__), ROOT / 'app_version.py', SOURCE_DIR / 'generate_gibson_lanni_psfs.py',
+            Path(__file__), ROOT / 'app_version.py', SOURCE_DIR / 'generate_vectorial_psfs.py',
             SOURCE_DIR / 'fiji_session_worker.py', SOURCE_DIR / 'imagej_runtime.py',
             SOURCE_DIR / 'imagej/HeadlessImageJ.java', SOURCE_DIR / 'ims_writer.py',
             SOURCE_DIR / 'lib/totalvariationterm.cl')}

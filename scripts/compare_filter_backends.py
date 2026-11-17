@@ -21,7 +21,7 @@ import SimpleITK as sitk
 import tifffile
 from PIL import Image, ImageDraw
 import batch_deconvolve_ims as batch
-import generate_gibson_lanni_psfs as generator
+import generate_vectorial_psfs as generator
 
 
 def metrics(old, new):
