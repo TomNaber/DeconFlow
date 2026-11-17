@@ -62,3 +62,32 @@ Verification used temporary scripts outside the repository, not added project te
 Retaining resources prevents avoidable teardown between channels, but is not a claim that a never-before-used FFT size becomes free. The plugin still creates/bakes plans internally. Background warm-up would shift first-use work earlier, not remove it; changing crop/padding/PSF sizes to avoid new kernels could change results and was not done.
 
 Reference: the [clFFT documentation](https://clmathlibraries.github.io/clFFT/) explains plan baking, OpenCL kernel compilation, and teardown.
+
+
+## Follow-up: retain the loaded stack’s channel previews (17 November 2026)
+
+Preview caches now retain disabled channels until the stack is unloaded. Each loaded
+channel has at most one raw source volume, staged crop TIFF, normalized PSF TIFF,
+deconvolved float volume, and processed projection pair. A new crop or parameter
+combination replaces the corresponding entry; no history of previous combinations
+is retained. Processed full volumes are temporary, not cached. Reloading, replacing,
+or closing the loaded stack destroys its worker and temporary cache directory.
+
+Both manual and automatic previews reuse valid cached results. Deconvolution keys
+contain crop bounds, the PSF file fingerprint, iterations, regularization, and boundary
+mode. Runtime settings, channel selection, names, and other channels’ settings do not
+invalidate numerical results. Post-processing changes reuse deconvolution; renaming
+updates metadata without rebuilding projections. Disabled filters do not invalidate
+processed results. Switching to processing without deconvolution removes that
+channel’s staged PSF. The bounded Fiji FFT runtime cache is unchanged.
+
+
+### Generated PSF cache correction
+
+The generated-PSF session also caches by individual channel and numerical generation
+settings, rather than the whole enabled-channel list. Disabling/re-enabling a channel
+retains the same PSF paths and fingerprints for unchanged channels, preventing
+unnecessary downstream deconvolution. Only missing or changed channels are generated;
+completed results replace that channel's single cached PSF. Display names do not
+invalidate PSF voxels. Changing the selected input stack clears the PSF session's
+channel entries, and completed/cancelled generation directories are removed.

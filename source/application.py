@@ -587,6 +587,7 @@ class Application:
         # set_folder triggers activity callbacks before channel preferences are rebuilt.
         self.active_channels = []
         self.preview.set_folder(folder)
+        self.session.set_scope(self.preview.selected_path)
         names = self.preview.files.cget('values')
         self.stack_status.set(f"{len(names)} Z-stack{'s' if len(names)!=1 else ''} found" if names else 'No Z-stacks detected')
         try:
@@ -1460,7 +1461,7 @@ class Application:
                 try:
                     if event[2]==0 and not cancelled:
                         if running['stage']=='generate':
-                            catalog = self.session.publish(running['request']['generator'],running['settings']['OUTPUT_DIR'])
+                            catalog = self.session.publish(running['request']['generator'],running['settings']['OUTPUT_DIR'],running['settings'])
                             for request in running['waiters'].values():
                                 self.continue_request(request,catalog)
                         else:
@@ -1474,6 +1475,8 @@ class Application:
                 except Exception as error:
                     self.set_batch_locked(False)
                     self.error(str(error))
+                if running['stage']=='generate':
+                    shutil.rmtree(running['settings']['OUTPUT_DIR'],ignore_errors=True)
                 pending,self.pending = self.pending,None
                 if pending and self.current(pending):
                     try:

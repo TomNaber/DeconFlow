@@ -112,8 +112,18 @@ def channel_settings(settings, index):
 
 
 def deconvolution_key(processing):
-    return {key: value for key, value in processing.items()
-            if key not in ("POST_PROCESSING", "CHANNEL_POST_PROCESSING", "OUTPUT_CHANNEL_NAME")}
+    # Only numerical inputs belong in the key; runtime/UI settings do not.
+    keys = ("CROP_BOUNDS", "PSF_FINGERPRINT")
+    if processing["PSF_FILE"] is not None:
+        keys += ("ITERATIONS", "RLTV_REGULARIZATION", "RLTV_NON_CIRCULANT")
+    return {key: processing.get(key) for key in keys}
+
+
+def processed_key(processing):
+    post = processing.get("CHANNEL_POST_PROCESSING", {})
+    if not processing.get("POST_PROCESSING", False) or post.get("filter", "None") == "None":
+        post = {}
+    return {**deconvolution_key(processing), "post": post}
 
 
 class PreviewCache:
@@ -152,15 +162,8 @@ class PreviewCache:
         bounds = self.bounds(settings)
         crop_key = tuple(tuple(bounds[a]) for a in "zyx")
         selected = settings["CHANNEL_INDICES"]
-        # Release deselected channels, keeping cache size independent of interaction history.
-        for cache in (self.inputs, self.psfs):
-            for index in list(cache):
-                if index not in selected:
-                    cache.pop(index)[1].unlink(missing_ok=True)
-        for cache in (self.results, self.deconvolved):
-            for index in list(cache):
-                if index not in selected:
-                    del cache[index]
+        # One slot per loaded channel, retained even while that channel is disabled.
+        # The worker and its entire cache are discarded when the stack is unloaded.
         for index in selected:
             if stale():
                 return
@@ -175,7 +178,11 @@ class PreviewCache:
                 self.inputs[index] = (crop_key, path)
                 del image
             fingerprint = channel_settings(settings, index)["PSF_FINGERPRINT"]
-            if fingerprint is not None and self.psfs.get(index, (None,))[0] != fingerprint:
+            if fingerprint is None:
+                previous = self.psfs.pop(index, None)
+                if previous is not None:
+                    previous[1].unlink(missing_ok=True)
+            elif self.psfs.get(index, (None,))[0] != fingerprint:
                 psf = load_psf_volume(fingerprint[0])
                 path = self.directory / f"psf-{index}.tif"
                 tifffile.imwrite(path, np.ascontiguousarray(psf), photometric="minisblack",
@@ -236,8 +243,9 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
         timings = {}
         processing = processing_by_channel[index]
         previous = cache.results.get(index)
-        if not settings.get("FORCE", False) and previous is not None and previous["processing"] == processing:
-            projection = previous
+        if not settings.get("FORCE", False) and previous is not None and processed_key(previous["processing"]) == processed_key(processing):
+            projection = {**previous, "processing": processing}
+            cache.results[index] = projection
             print(f"{label}: reusing cached preview.", flush=True)
         else:
             if index in missing and processing["PSF_FILE"] is None:
