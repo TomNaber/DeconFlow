@@ -326,15 +326,17 @@ def store_result(result):
     return np.clip(np.rint(result), 0, 65535).astype(np.uint16)
 
 
-def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=None):
+def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=None,
+               *, file_index=1, n_files=1):
     spacing_zyx = voxel_size(reader)
     channel_maxima = [0] * n_channels
     for time_index in range(n_timepoints):
         for channel_index in range(n_channels):
             name = str(channels[channel_index]["name"])
             label = (
-                f"T{time_index + 1}/{n_timepoints} "
-                f"C{channel_index + 1}/{n_channels} {name}"
+                f"File {file_index}/{n_files} "
+                + (f"T{time_index + 1}/{n_timepoints} " if n_timepoints > 1 else "")
+                + f"C{channel_index + 1}/{n_channels} {name}"
             )
             channel_started = perf_counter()
             timings = {}
@@ -412,7 +414,7 @@ def preserve_original_channel_metadata(input_path, output_path, indices):
                 source.copy(metadata, output["DataSetInfo"], name=name)
 
 
-def process_file(input_path, channels, psfs, record=None):
+def process_file(input_path, channels, psfs, record=None, *, file_index=1, n_files=1):
     record = {} if record is None else record
     counts = {int(key): value for key, value in CHANNEL_ITERATIONS.items()}
     iteration_tag = (str(next(iter(counts.values()))) if counts and len(set(counts.values())) == 1
@@ -510,7 +512,8 @@ def process_file(input_path, channels, psfs, record=None):
         print(f"  Source channels: {reader.channel_names}")
 
         output = np.memmap(array_path, mode="w+", dtype=np.uint16, shape=shape)
-        channel_ranges = deconvolve(reader, output, file_channels, file_psfs, n_t, n_c, record=record)
+        channel_ranges = deconvolve(reader, output, file_channels, file_psfs, n_t, n_c,
+                                    record=record, file_index=file_index, n_files=n_files)
         output.flush()
         reader = None
         gc.collect()
@@ -622,14 +625,15 @@ def run_batch(report):
     print(f"Found {len(input_files)} IMS files")
     print(f"Output: {OUTPUT_DIR}")
     failed = []
-    for input_path, record in zip(input_files, report.data['files']):
+    for file_index, (input_path, record) in enumerate(zip(input_files, report.data['files']), start=1):
         file_started = perf_counter()
         record.update(status='running', started_utc=timestamp())
         report.save()
         try:
             stat = input_path.stat()
             record.update(input_size_bytes=stat.st_size, input_mtime_ns=stat.st_mtime_ns)
-            process_file(input_path, channels, psfs, record)
+            process_file(input_path, channels, psfs, record,
+                         file_index=file_index, n_files=len(input_files))
         except Exception as error:
             record.update(status='failed', error=str(error), traceback=traceback.format_exc())
             print(f"FAILED: {input_path.name}", file=sys.stderr)
