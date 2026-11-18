@@ -146,7 +146,6 @@ class ZoomBar(ttk.Frame):
                 icon.configure(file=str(assets/f'{name}{suffix}.png'))
         self.bind('<Map>',theme)
         theme()
-        zoom.trace_add('write',self.sync)
         self.sync()
 
     def set_maximum(self, maximum):
@@ -157,8 +156,12 @@ class ZoomBar(ttk.Frame):
         self.sync()
 
     def sync(self,*args):
-        self.position.set(zoom_position(self.zoom.get(), self.maximum))
-        self.label.set(f'{self.zoom.get():.0f}%')
+        position = zoom_position(self.zoom.get(), self.maximum)
+        label = f'{self.zoom.get():.0f}%'
+        if self.position.get() != position:
+            self.position.set(position)
+        if self.label.get() != label:
+            self.label.set(label)
 
     def slide(self,value,changed):
         self.zoom.set(zoom_percent(value, self.maximum))

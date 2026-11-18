@@ -15,6 +15,7 @@ import threading
 from time import perf_counter
 import tkinter as tk
 import webbrowser
+from weakref import WeakKeyDictionary
 from tkinter import ttk, filedialog, messagebox
 from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
@@ -28,6 +29,7 @@ from source.edit_ims_channels import NAMED_COLORS
 from source.median_kernels import MEDIAN_KERNELS, kernel_label
 from source.platform_support import process_session_options, stop_process_tree
 from source.preview import Preview
+from source.interaction import scroll_pixels
 from source.psf_channels import read_psf_channels
 from source.psf_session import PSFSession, memory_argument, memory_gb
 from source.psf_view import PSFView, load_projections
@@ -179,6 +181,8 @@ class Application:
         self.controls = ttk.Frame(self.settings_canvas,padding=8)
         self.settings_item = self.settings_canvas.create_window(0,0,window=self.controls,anchor='nw')
         self.settings_layout_job = None
+        self.settings_sizes = WeakKeyDictionary()
+        self.settings_extent = None
         self.settings_grid_parents = []
         self.settings_packed_rows = []
         self.controls.bind('<Configure>',self.schedule_settings_layout)
@@ -355,6 +359,11 @@ class Application:
         return group
 
     def schedule_settings_layout(self,event=None):
+        if event is not None:
+            size = (event.width, event.height)
+            if self.settings_sizes.get(event.widget) == size:
+                return
+            self.settings_sizes[event.widget] = size
         if self.settings_layout_job is None:
             self.settings_layout_job = self.window.after_idle(self.fit_settings)
 
@@ -372,8 +381,11 @@ class Application:
         content_height = self.controls.winfo_reqheight()
         # Extend the themed frame below its last group instead of exposing canvas.
         height = max(content_height,viewport_height)
-        self.settings_canvas.itemconfigure(self.settings_item,width=width,height=height)
-        self.settings_canvas.configure(scrollregion=(0,0,width,height))
+        extent = (width, height)
+        if self.settings_extent != extent:
+            self.settings_extent = extent
+            self.settings_canvas.itemconfigure(self.settings_item,width=width,height=height)
+            self.settings_canvas.configure(scrollregion=(0,0,width,height))
         if content_height <= viewport_height:
             self.settings_canvas.yview_moveto(0)
 
@@ -465,10 +477,7 @@ class Application:
             else:
                 canvas = None
             if canvas is not None:
-                units = -1 if getattr(event,'num',None)==4 else 1 if getattr(event,'num',None)==5 else -event.delta
-                if abs(units)>=120:
-                    units/=120
-                canvas.yview_scroll(int(units),'units')
+                scroll_pixels(canvas, event)
                 return 'break'
             target = getattr(target,'master',None)
 

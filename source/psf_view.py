@@ -14,6 +14,7 @@ from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
 from source.psf_channels import load_psf_volume
 from source.preview_gestures import install_pinch
+from source.interaction import FrameScheduler, WheelZoom, wheel_steps, precise_wheel
 from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, draw_scale_bar
 from source.ui_style import workspace_background
 
@@ -72,6 +73,10 @@ class PSFView(ttk.Frame):
         self.center = {'x': 0., 'y': 0., 'z': 0.}
         self.drag = None
         self.photo = None
+        self.prepared_planes = {}
+        self.frames = FrameScheduler(self, self.draw)
+        self.wheel_animation = WheelZoom(self.zoom.get, self.set_zoom, self.schedule_draw,
+                                         lambda: (MIN_ZOOM, MAX_ZOOM))
         self.toolbar_shell = ttk.Frame(self)
         self.toolbar_shell.pack(fill='x',pady=(0,8))
         self.toolbar = ttk.Frame(self.toolbar_shell)
@@ -96,16 +101,17 @@ class PSFView(ttk.Frame):
         self.actions.bind('<Configure>',self.layout_actions)
         area = ttk.Frame(self)
         area.pack(fill='both',expand=True)
-        self.zoom_bar = ZoomBar(area,self.zoom,self.draw,self.reset)
+        self.zoom_bar = ZoomBar(area,self.zoom,self.schedule_draw,self.reset)
         self.zoom_bar.pack(side='right',fill='y',padx=(6,0))
         self.slider = self.zoom_bar.slider
+        self.slider.bind('<ButtonPress-1>', lambda event: self.wheel_animation.cancel(), add='+')
         self.zoom_label = self.zoom_bar.label
         self.views = ttk.Frame(area)
         self.views.pack(side='left',fill='both',expand=True)
         self.views.bind('<Configure>',self.layout_views)
         self.canvas = tk.Canvas(self.views,background=workspace_background(self),highlightthickness=0,borderwidth=0,width=1,height=1)
         self.canvas.place(x=0,y=0,width=1,height=1)
-        self.canvas.bind('<Configure>', lambda event:self.draw())
+        self.canvas.bind('<Configure>', lambda event:self.schedule_draw())
         for sequence in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
             self.canvas.bind(sequence, self.wheel)
         self.canvas.bind('<ButtonPress-1>', self.start_pan)
@@ -144,6 +150,7 @@ class PSFView(ttk.Frame):
         for settings in (self.channel_visibility, self.channel_contrast):
             for index in settings.keys() - retained:
                 del settings[index]
+        self.prepared_planes.clear()
         self.channels = channels
         self.original_colors = colors
         self.stale = False
@@ -170,6 +177,37 @@ class PSFView(ttk.Frame):
                 extents.append(min(vw / (w * pixel_size[0]), vh / (h * pixel_size[1])))
         return min(extents, default=1.) * self.zoom.get() / 100
 
+    def prepared_layers(self, axis):
+        # Channels with identical voxel geometry can be blended before the
+        # affine transform. Keep float planes: clipping before interpolation
+        # would change saturated overlaps and the resulting display colors.
+        selected = self.selected()
+        signature = tuple((id(c[axis]), c['index'], tuple(c['spacing']),
+                           tuple(self.channel_contrast.get(c['index'], NEUTRAL_CONTRAST)),
+                           tuple(NAMED_COLORS.get(
+                               self.preferences.get(str(c['index']), {}).get('color', 'Original'),
+                               self.original_colors.get(c['index'], (1, 1, 1))))) for c in selected)
+        cached = self.prepared_planes.get(axis)
+        if cached is not None and cached[0] == signature:
+            return cached[2]
+        groups = {}
+        for channel, entry in zip(selected, signature):
+            source = channel[axis]
+            dz, dy, dx = channel['spacing']
+            sx, sy = (dx, dy) if axis == 'xy' else (dy, dz)
+            key = (source.shape, sx, sy)
+            if key not in groups:
+                groups[key] = np.zeros((*source.shape, 3), dtype=np.float32)
+            intensity = apply_contrast(source, entry[3])
+            groups[key] += intensity[..., None] * np.asarray(entry[4])
+        layers = []
+        for ((height, width), sx, sy), colors in groups.items():
+            planes = [Image.fromarray(colors[..., band]) for band in range(3)]
+            layers.append((sx, sy, planes, Image.new('L', (width, height), 255)))
+        # Retain source references as well as identities, preventing id reuse.
+        self.prepared_planes[axis] = (signature, [c[axis] for c in selected], layers)
+        return layers
+
     def render(self, width, height):
         rects = self.viewports(width, height)
         scale = self.scale(rects)
@@ -177,47 +215,51 @@ class PSFView(ttk.Frame):
         calibrated = bool(selected) and all(not channel['pixels'] for channel in selected)
         result = Image.new('RGB', (width, height), self.canvas.cget('background'))
         for axis, (left, top, w, h) in rects.items():
-            # Match the deconvolution preview's unused image area.
             result.paste('#242424', (left, top, left+w, top+h))
             overlay = np.zeros((h, w, 3), dtype=np.float32)
             coverage = np.zeros((h, w), dtype=bool)
-            for channel in self.selected():
-                dz, dy, dx = channel['spacing']
-                sx, sy = (dx, dy) if axis == 'xy' else (dy, dz)
-                horizontal, vertical = ('x', 'y') if axis == 'xy' else ('y', 'z')
-                contrast = self.channel_contrast.get(channel['index'], NEUTRAL_CONTRAST)
-                array = apply_contrast(channel[axis], contrast)
-                ih, iw = array.shape
+            horizontal, vertical = ('x', 'y') if axis == 'xy' else ('y', 'z')
+            for sx, sy, planes, mask in self.prepared_layers(axis):
+                iw, ih = mask.size
                 transform = (1 / (scale*sx), 0, iw/2 + self.center[horizontal]/sx - w/(2*scale*sx),
                              0, 1 / (scale*sy), ih/2 + self.center[vertical]/sy - h/(2*scale*sy))
-                plane = Image.fromarray(array).transform((w, h), Image.Transform.AFFINE, transform,
-                                                        Image.Resampling.BILINEAR)
-                # Track image bounds independently of intensity so dark PSF
-                # pixels stay black while unused viewport space stays dark gray.
-                bounds = Image.new('L', (iw, ih), 255).transform(
-                    (w, h), Image.Transform.AFFINE, transform, Image.Resampling.NEAREST)
+                for band, plane in enumerate(planes):
+                    transformed = plane.transform((w, h), Image.Transform.AFFINE, transform,
+                                                  Image.Resampling.BILINEAR)
+                    overlay[..., band] += np.asarray(transformed)
+                bounds = mask.transform((w, h), Image.Transform.AFFINE, transform, Image.Resampling.NEAREST)
                 coverage |= np.asarray(bounds) > 0
-                color_name = self.preferences.get(str(channel['index']), {}).get('color', 'Original')
-                color = NAMED_COLORS.get(color_name, self.original_colors.get(channel['index'], (1,1,1)))
-                overlay += np.asarray(plane)[..., None] * np.asarray(color)
-            image = Image.fromarray(np.uint8(np.clip(overlay, 0, 1) * 255))
+            np.clip(overlay, 0, 1, out=overlay)
+            overlay *= 255
+            image = Image.fromarray(overlay.astype(np.uint8))
             result.paste(image, (left, top), Image.fromarray(coverage))
             if calibrated:
                 draw_scale_bar(result, scale, (left, top, w, h))
         return result
 
+    def schedule_draw(self):
+        self.frames.request()
+
     def draw(self):
+        self.frames.cancel()
+        self.wheel_animation.step()
+        self.zoom_bar.sync()
         self.export_button.configure(state='normal' if not self.stale and self.selected() else 'disabled')
-        self.zoom_label.set(f'{self.zoom.get():.0f}%')
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         if width <= 1 or height <= 1:
             return
         image = self.render(width, height)
         self.photo = ImageTk.PhotoImage(image, master=self)
-        self.canvas.delete('all')
-        self.canvas.create_image(0, 0, anchor='nw', image=self.photo)
+        if self.canvas.find_withtag('projection'):
+            self.canvas.itemconfigure('projection', image=self.photo)
+        else:
+            self.canvas.create_image(0, 0, anchor='nw', image=self.photo, tags='projection')
+        if self.wheel_animation.target is None:
+            self.frames.cancel()
 
     def reset(self):
+        self.wheel_animation.cancel()
+        self.frames.cancel()
         self.zoom.set(100)
         self.center = dict.fromkeys('xyz', 0.)
         self.draw()
@@ -233,22 +275,26 @@ class PSFView(ttk.Frame):
                 self.center[a] += (x-left-w/2) * (1/old-1/new)
                 self.center[b] += (y-top-h/2) * (1/old-1/new)
                 break
-        self.draw()
+        self.schedule_draw()
 
     def wheel(self, event):
-        steps = 1 if getattr(event,'num',None)==4 else -1 if getattr(event,'num',None)==5 else event.delta
-        if abs(steps) >= 120:
-            steps /= 120
-        self.set_zoom(self.zoom.get() * 1.1**max(-10,min(10,steps)), event.x, event.y)
+        steps = wheel_steps(event)
+        if precise_wheel(event):
+            self.wheel_animation.cancel()
+            self.set_zoom(self.zoom.get() * 1.1 ** max(-10, min(10, steps)), event.x, event.y)
+        else:
+            self.wheel_animation.add(steps, event.x, event.y)
         return 'break'
 
     def pinch(self, target, x, y, amount):
         if target is not self.canvas:
             return False
+        self.wheel_animation.cancel()
         self.set_zoom(self.zoom.get()*max(.01,1+amount), x-self.canvas.winfo_rootx(), y-self.canvas.winfo_rooty())
         return True
 
     def start_pan(self, event):
+        self.wheel_animation.cancel()
         for axis, (left, top, w, h) in self.viewports(self.canvas.winfo_width(), self.canvas.winfo_height()).items():
             if left <= event.x <= left+w and top <= event.y <= top+h:
                 self.drag = (axis, event.x, event.y, dict(self.center))
@@ -261,9 +307,10 @@ class PSFView(ttk.Frame):
             scale = self.scale(self.viewports(self.canvas.winfo_width(), self.canvas.winfo_height()))
             self.center[a] = center[a]-(event.x-x)/scale
             self.center[b] = center[b]-(event.y-y)/scale
-            self.draw()
+            self.schedule_draw()
 
     def export(self):
+        self.wheel_animation.finish()
         if self.stale or not self.selected():
             return
         path = filedialog.asksaveasfilename(parent=self.winfo_toplevel(), title='Export PSF screenshot',
@@ -284,4 +331,6 @@ class PSFView(ttk.Frame):
             self.error(str(error))
 
     def close(self):
+        self.wheel_animation.cancel()
+        self.frames.close()
         self.remove_pinch()

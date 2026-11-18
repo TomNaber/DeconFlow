@@ -18,6 +18,7 @@ from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
 from source.preview_gestures import install_pinch
+from source.interaction import FrameScheduler, WheelZoom, wheel_steps, precise_wheel
 from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, plane_axes, draw_scale_bar
 from source.fiji_session import FijiSession, atomic_json
 from source.platform_support import stop_process_tree
@@ -86,7 +87,12 @@ class Preview(ttk.Frame):
         self.drag = None
         self.crop = None
         self.crop_drag = None
-        self.draw_job = None
+        self.frames = FrameScheduler(self, self.draw)
+        self.wheel_animation = WheelZoom(self.zoom.get, self.set_zoom, self.schedule_draw,
+                                         lambda: (MIN_ZOOM, self.zoom_bar.maximum))
+        self.dimmed_images = {}
+        self.viewport_images = {}
+        self.displayed_images = {}
         self.projection_job = None
         self.projection_pending = False
         self.disabled = False
@@ -143,6 +149,7 @@ class Preview(ttk.Frame):
         self.zoom_bar = ZoomBar(image_area,self.zoom,self.schedule_draw,self.reset_zoom,autofit=self.autofit_crop)
         self.zoom_bar.pack(side="right",fill="y",padx=(6,0))
         self.zoom_slider = self.zoom_bar.slider
+        self.zoom_slider.bind('<ButtonPress-1>', lambda event: self.wheel_animation.cancel(), add='+')
         self.autofit_button = self.zoom_bar.autofit_button
         self.reset_button = self.zoom_bar.reset_button
         self.zoom_position = self.zoom_bar.position
@@ -160,7 +167,7 @@ class Preview(ttk.Frame):
                 self.view_cells[row, axis] = cell
                 canvas = tk.Canvas(cell, width=1, height=1, highlightthickness=0, background="#242424")
                 canvas.place(x=0, y=0, width=1, height=1)
-                canvas.bind("<Configure>", lambda event: self.draw())
+                canvas.bind("<Configure>", lambda event: self.schedule_draw())
                 key = row, axis
                 canvas.bind("<MouseWheel>", lambda event, key=key: self.wheel_zoom(event, key))
                 canvas.bind("<Button-4>", lambda event, key=key: self.wheel_zoom(event, key))
@@ -511,17 +518,9 @@ class Preview(ttk.Frame):
                     self.recolor()
                     self.parameters_changed()
                 elif kind == "original_projection":
-                    bounds, axes, projections = value
                     self.projection_pending = False
-                    if self.data is not None:
-                        projections = {channel["index"]: channel for channel in projections}
-                        for channel in self.data["channels"]:
-                            channel.update(projections[channel["index"]])
-                        for axis in axes:
-                            depth = "z" if axis == "xy" else "x"
-                            self.data[f"{axis}_bounds"] = bounds[depth]
-                        self.recolor()
-                        self.schedule_projection()
+                    self.accept_projection(value)
+                    self.schedule_projection()
                 elif kind in ("deconvolved", "failed"):
                     revision, result = value
                     self.busy = None
@@ -559,6 +558,9 @@ class Preview(ttk.Frame):
     def recolor(self):
         if self.data is not None:
             self.images.clear()
+            self.dimmed_images.clear()
+            self.viewport_images.clear()
+            self.displayed_images.clear()
             self.photos.clear()
             for canvas in self.canvases.values():
                 canvas.delete("all")
@@ -576,6 +578,7 @@ class Preview(ttk.Frame):
         self.draw()
 
     def autofit_crop(self):
+        self.wheel_animation.cancel()
         if self.data is None or self.crop is None:
             return
         self.end_drag()
@@ -600,6 +603,8 @@ class Preview(ttk.Frame):
         self.schedule_draw()
 
     def reset_view(self, reset_range=True):
+        self.wheel_animation.cancel()
+        self.frames.cancel()
         if reset_range:
             self.zoom_bar.set_maximum(MAX_ZOOM)
         self.zoom.set(100)
@@ -634,15 +639,17 @@ class Preview(ttk.Frame):
             horizontal, vertical = plane_axes(key[1])
             self.center[horizontal] += (x - canvas.winfo_width() / 2) * (1 / old_scale - 1 / new_scale)
             self.center[vertical] += (y - canvas.winfo_height() / 2) * (1 / old_scale - 1 / new_scale)
-        self.zoom_label.set(f"{self.zoom.get():.0f}%")
         self.schedule_draw()
 
     def wheel_zoom(self, event, key):
-        if event.num in (4, 5):
-            steps = 1 if event.num == 4 else -1
+        if self.data is None:
+            return "break"
+        steps = wheel_steps(event)
+        if precise_wheel(event):
+            self.wheel_animation.cancel()
+            self.set_zoom(self.zoom.get() * 1.1 ** max(-10, min(10, steps)), key, event.x, event.y)
         else:
-            steps = event.delta if sys.platform == "darwin" else event.delta / 120
-        self.set_zoom(self.zoom.get() * 1.1 ** max(-10, min(10, steps)), key, event.x, event.y)
+            self.wheel_animation.add(steps, key, event.x, event.y)
         return "break"
 
     def pinch(self, target, x, y, amount):
@@ -650,6 +657,7 @@ class Preview(ttk.Frame):
             return False
         for key, canvas in self.canvases.items():
             if target is canvas:
+                self.wheel_animation.cancel()
                 self.set_zoom(self.zoom.get() * max(0.01, 1 + amount), key,
                               x - canvas.winfo_rootx(), y - canvas.winfo_rooty())
                 return True
@@ -693,6 +701,7 @@ class Preview(ttk.Frame):
         self.canvases[key].configure(cursor=cursor)
 
     def start_drag(self, event, key):
+        self.wheel_animation.cancel()
         edges = self.crop_edges(key, event.x, event.y)
         if not edges:
             self.start_pan(event, key)
@@ -722,7 +731,6 @@ class Preview(ttk.Frame):
                 self.sync_changed()
                 # Keep the displayed crop and cached result until a new preview
                 # completes. Sync schedules that run on release; manual mode waits.
-                self.recolor()
                 self.on_activity()
             self.schedule_draw()
             self.schedule_projection()
@@ -730,11 +738,15 @@ class Preview(ttk.Frame):
     def end_drag(self, event=None):
         if self.crop_drag is not None:
             key = self.crop_drag["key"]
+            changed = self.crop_drag["changed"]
             self.crop_drag = None
             self.canvases[key].configure(cursor="")
-            self.schedule_projection()
             self.schedule_draw()
-            self.sync_changed()
+            if changed:
+                self.schedule_projection()
+                self.sync_changed()
+            else:
+                self.update_controls()
         self.end_pan()
 
     def pan(self, event):
@@ -752,16 +764,39 @@ class Preview(ttk.Frame):
             self.drag = None
 
     def schedule_draw(self):
-        if self.draw_job is None:
-            self.draw_job = self.after_idle(self.draw)
+        self.frames.request()
 
     def projection_matches(self, axis):
         depth = "z" if axis == "xy" else "x"
         size = self.data["shape"][0 if axis == "xy" else 2]
         return self.data.get(f"{axis}_bounds", [0, size]) == self.crop[depth]
 
+    def accept_projection(self, value):
+        if self.data is None:
+            return
+        bounds, axes, projections = value
+        projections = {channel["index"]: channel for channel in projections}
+        for channel in self.data["channels"]:
+            channel.update(projections[channel["index"]])
+        for axis in axes:
+            self.data[f"{axis}_bounds"] = bounds['z' if axis == 'xy' else 'x']
+        # Only changed source axes need compositing. Keep the processed panes
+        # and unaffected viewport caches intact while live projections arrive.
+        channels = self.display_channels(0)
+        for axis in axes:
+            if channels:
+                self.images[0, axis] = composite(channels, axis, self.preferences, self.channel_contrast[0])
+            self.dimmed_images.pop(axis, None)
+            self.viewport_images.pop((0, axis), None)
+        self.schedule_draw()
+
     def schedule_projection(self):
-        # At most one calculation in flight; subsequent requests use the latest crop.
+        # Update during dragging with at most one calculation in flight. Each
+        # next request samples the latest bounds rather than queuing old steps.
+        # View transforms (pan/zoom) never change these voxel bounds.
+        if self.data is None or self.crop is None or all(
+                self.projection_matches(axis) for axis in ("xy", "yz")):
+            return
         if self.projection_job is None and not self.projection_pending:
             self.projection_job = self.after(100, self.refresh_projection)
 
@@ -777,7 +812,7 @@ class Preview(ttk.Frame):
             except (OSError, EOFError):
                 pass
 
-    def render_views(self):
+    def render_views(self, *, exact=False):
         scale = self.view_scale()
         if scale <= 0:
             return {}
@@ -792,41 +827,86 @@ class Preview(ttk.Frame):
             crop = self.deconvolved.get("crop") if row and self.deconvolved else None
             x_offset = crop[horizontal][0] if crop else 0
             y_offset = crop[vertical][0] if crop else 0
-            if row == 0 and self.crop is not None:
-                # While dragging, retain the latest completed frame until its replacement arrives.
-                if self.crop_drag is None and not self.projection_matches(axis):
-                    rendered[row, axis] = Image.new("RGB", (width, height), canvas.cget("background"))
-                    continue
+            moving_crop = not exact and self.crop_drag is not None and row == 0 and self.crop is not None
+            if exact and row == 0 and self.crop is not None and not self.projection_matches(axis):
+                # Never export an old depth projection as the current crop.
+                rendered[row, axis] = Image.new("RGB", (width, height), canvas.cget("background"))
+                continue
+            if row == 0 and self.crop is not None and not moving_crop:
                 box = (self.crop[horizontal][0], self.crop[vertical][0],
                        self.crop[horizontal][1], self.crop[vertical][1])
-                selected = image.crop(box)
-                image = ImageEnhance.Brightness(image).enhance(0.2)
-                image.paste(selected, box)
+                cached = self.dimmed_images.get(axis)
+                if cached is None or cached[0] is not image or cached[1] != box:
+                    dimmed = ImageEnhance.Brightness(image).enhance(0.2)
+                    dimmed.paste(image.crop(box), box)
+                    cached = self.dimmed_images[axis] = (image, box, dimmed)
+                image = cached[2]
             transform = (1 / (scale * spacing), 0, (self.center[horizontal] - width / (2 * scale)) / spacing - x_offset,
                          0, 1 / (scale * vertical_spacing), (self.center[vertical] - height / (2 * scale)) / vertical_spacing - y_offset)
-            rendered[row, axis] = image.transform((width, height), Image.Transform.AFFINE, transform,
-                                                  Image.Resampling.BILINEAR, fillcolor=canvas.cget("background"))
-            draw_scale_bar(rendered[row, axis], scale)
+            cache_key = (width, height, transform, canvas.cget("background"), moving_crop)
+            cached = self.viewport_images.get((row, axis))
+            if cached is None or cached[0] is not image or cached[1] != cache_key:
+                view = image.transform((width, height), Image.Transform.AFFINE, transform,
+                                       Image.Resampling.BILINEAR, fillcolor=canvas.cget("background"))
+                dimmed = None
+                if moving_crop:
+                    dimmed = ImageEnhance.Brightness(view).enhance(0.2)
+                    # Dimming applies only to image pixels, not unused canvas.
+                    coverage = Image.new('L', image.size, 255).transform(
+                        (width, height), Image.Transform.AFFINE, transform, Image.Resampling.NEAREST)
+                    background = Image.new('RGB', view.size, canvas.cget("background"))
+                    background.paste(dimmed, (0, 0), coverage)
+                    dimmed = background
+                else:
+                    draw_scale_bar(view, scale)
+                cached = self.viewport_images[row, axis] = (image, cache_key, view, dimmed)
+            if moving_crop:
+                # Work scales with the viewport, not a potentially huge source
+                # projection. Full source-space crop interpolation is used for
+                # the settled frame and exports.
+                view = cached[3].copy()
+                left, top, right, bottom = self.crop_rectangle((row, axis))
+                box = (max(0, min(width, round(left))), max(0, min(height, round(top))),
+                       max(0, min(width, round(right))), max(0, min(height, round(bottom))))
+                if box[2] > box[0] and box[3] > box[1]:
+                    view.paste(cached[2].crop(box), box)
+                draw_scale_bar(view, scale)
+                rendered[row, axis] = view
+            else:
+                rendered[row, axis] = cached[2]
         return rendered
 
     def draw(self):
-        if self.draw_job is not None:
-            self.after_cancel(self.draw_job)
-            self.draw_job = None
+        self.frames.cancel()
+        self.wheel_animation.step()
+        self.zoom_bar.sync()
         for key, image in self.render_views().items():
             canvas = self.canvases[key]
+            if self.displayed_images.get(key) is image:
+                continue
+            self.displayed_images[key] = image
             self.photos[key] = ImageTk.PhotoImage(image, master=self)
-            canvas.delete("all")
-            canvas.create_image(0, 0, anchor="nw", image=self.photos[key])
+            if canvas.find_withtag("projection"):
+                canvas.itemconfigure("projection", image=self.photos[key])
+            else:
+                canvas.create_image(0, 0, anchor="nw", image=self.photos[key], tags="projection")
+                canvas.tag_lower("projection")
         if self.crop is not None and self.view_scale() > 0:
             for axis in ("xy", "yz"):
                 key = 0, axis
                 canvas = self.canvases[key]
-                canvas.delete("crop")
-                canvas.create_rectangle(*self.crop_rectangle(key), outline="#ffff00", width=2, tags="crop")
+                if canvas.find_withtag("crop"):
+                    canvas.coords("crop", *self.crop_rectangle(key))
+                else:
+                    canvas.create_rectangle(*self.crop_rectangle(key), outline="#ffff00", width=2, tags="crop")
+        # set_zoom schedules while advancing the animation. Remove that request
+        # when the exact final frame has already been rendered.
+        if self.wheel_animation.target is None:
+            self.frames.cancel()
 
     def screenshot(self):
-        rendered = self.render_views()
+        self.wheel_animation.finish()
+        rendered = self.render_views(exact=True)
         row = 1 if (1, "xy") in rendered else 0
         if (row, "xy") not in rendered:
             return None
@@ -901,6 +981,11 @@ class Preview(ttk.Frame):
         self.update_controls()
 
     def clear(self):
+        self.wheel_animation.cancel()
+        self.frames.cancel()
+        self.dimmed_images.clear()
+        self.viewport_images.clear()
+        self.displayed_images.clear()
         if self.batch_directory is not None:
             Path(self.batch_directory.name, "disabled").touch()
         if self.projection_job is not None:
@@ -970,8 +1055,6 @@ class Preview(ttk.Frame):
     def close(self):
         self.stop_fiji()
         self.remove_pinch()
-        if self.draw_job is not None:
-            self.after_cancel(self.draw_job)
-            self.draw_job = None
+        self.frames.close()
         self.after_cancel(self.poll_job)
         self.clear()
