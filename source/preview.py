@@ -140,9 +140,10 @@ class Preview(ttk.Frame):
         actions.bind("<Configure>", layout_actions)
         image_area = ttk.Frame(self)
         image_area.pack(fill="both", expand=True)
-        self.zoom_bar = ZoomBar(image_area,self.zoom,self.schedule_draw,self.reset_zoom)
+        self.zoom_bar = ZoomBar(image_area,self.zoom,self.schedule_draw,self.reset_zoom,autofit=self.autofit_crop)
         self.zoom_bar.pack(side="right",fill="y",padx=(6,0))
         self.zoom_slider = self.zoom_bar.slider
+        self.autofit_button = self.zoom_bar.autofit_button
         self.reset_button = self.zoom_bar.reset_button
         self.zoom_position = self.zoom_bar.position
         self.zoom_label = self.zoom_bar.label
@@ -235,6 +236,7 @@ class Preview(ttk.Frame):
         self.sync_button.configure(state="disabled" if disabled else "normal")
         self.zoom_slider.configure(state="normal" if self.data is not None else "disabled")
         self.reset_button.configure(state="normal" if self.data is not None else "disabled")
+        self.autofit_button.configure(state="normal" if self.data is not None else "disabled")
         ready = (self.matches_loaded() and self.selected_channels and not disabled and self.busy is None
                  and self.crop_drag is None and not self.sync.get())
         ready = ready and self.psfs_ready(self.selected_channels)
@@ -570,10 +572,36 @@ class Preview(ttk.Frame):
 
     def reset_zoom(self):
         self.end_pan()
-        self.reset_view()
+        self.reset_view(reset_range=False)
         self.draw()
 
-    def reset_view(self):
+    def autofit_crop(self):
+        if self.data is None or self.crop is None:
+            return
+        self.end_drag()
+        base_scale = self.view_scale() * 100 / self.zoom.get()
+        if base_scale <= 0:
+            return
+        spacing = dict(zip("zyx", self.data["spacing"]))
+        extents = {axis: (upper - lower) * spacing[axis]
+                   for axis, (lower, upper) in self.crop.items()}
+        if any(extent <= 0 for extent in extents.values()):
+            return
+        fit = min(
+            min((canvas.winfo_width() - 8) / extents[plane_axes(axis)[0]],
+                (canvas.winfo_height() - 8) / extents[plane_axes(axis)[1]])
+            for (row, axis), canvas in self.canvases.items()
+        )
+        zoom = max(MIN_ZOOM, 100 * fit / base_scale)
+        self.zoom_bar.set_maximum(max(self.zoom_bar.maximum, zoom))
+        self.center = {axis: (lower + upper) * spacing[axis] / 2
+                       for axis, (lower, upper) in self.crop.items()}
+        self.zoom.set(zoom)
+        self.schedule_draw()
+
+    def reset_view(self, reset_range=True):
+        if reset_range:
+            self.zoom_bar.set_maximum(MAX_ZOOM)
         self.zoom.set(100)
         self.zoom_label.set("100%")
         self.drag = None
@@ -599,7 +627,7 @@ class Preview(ttk.Frame):
         if self.data is None:
             return
         old_scale = self.view_scale()
-        self.zoom.set(min(MAX_ZOOM, max(MIN_ZOOM, value)))
+        self.zoom.set(min(self.zoom_bar.maximum, max(MIN_ZOOM, value)))
         new_scale = self.view_scale()
         if key is not None and old_scale > 0 and new_scale > 0:
             canvas = self.canvases[key]

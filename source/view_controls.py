@@ -13,12 +13,13 @@ ZOOM_STEPS = math.log2(MAX_ZOOM / MIN_ZOOM)
 PANE_GAP = 4
 
 
-def zoom_position(percent):
-    return ZOOM_STEPS - math.log2(min(MAX_ZOOM, max(MIN_ZOOM, percent)) / MIN_ZOOM)
+def zoom_position(percent, maximum=MAX_ZOOM):
+    return math.log2(maximum / MIN_ZOOM) - math.log2(min(maximum, max(MIN_ZOOM, percent)) / MIN_ZOOM)
 
 
-def zoom_percent(position):
-    return MIN_ZOOM * 2 ** (ZOOM_STEPS - min(ZOOM_STEPS, max(0, float(position))))
+def zoom_percent(position, maximum=MAX_ZOOM):
+    steps = math.log2(maximum / MIN_ZOOM)
+    return MIN_ZOOM * 2 ** (steps - min(steps, max(0, float(position))))
 
 
 def pane_grid(width, height):
@@ -89,7 +90,7 @@ def draw_scale_bar(image, pixels_per_um, viewport=None):
 
 class ResetButton(ttk.Frame):
     """The compact native reset control shared with the zoom bar."""
-    def __init__(self, parent, command, size=None):
+    def __init__(self, parent, command, size=None, glyph='↺'):
         if size is None:
             icon = tk.PhotoImage(master=parent, file=str(Path(__file__).with_name('assets') / 'zoom-in.png'))
             size = icon.width()
@@ -103,15 +104,16 @@ class ResetButton(ttk.Frame):
             ('Button.button',{'sticky':'nswe'}),
             ('Button.label',{'sticky':'nswe'}),
         ])
-        self.button = ttk.Button(self,text='↺',style='ZoomReset.TButton',
+        self.button = ttk.Button(self,text=glyph,style='ZoomReset.TButton',
                                        width=1,command=command,takefocus=True)
         self.button.place(x=0,y=0,width=size,height=size)
 
 
 class ZoomBar(ttk.Frame):
-    def __init__(self, parent, zoom, changed, reset):
+    def __init__(self, parent, zoom, changed, reset, autofit=None):
         super().__init__(parent)
         self.zoom = zoom
+        self.maximum = MAX_ZOOM
         self.position = tk.DoubleVar(value=zoom_position(zoom.get()))
         self.label = tk.StringVar()
         assets = Path(__file__).with_name('assets')
@@ -123,12 +125,17 @@ class ZoomBar(ttk.Frame):
         self.slider.pack(fill='y',expand=True,pady=4)
         ttk.Label(self,image=self.icons['zoom-out'],anchor='center').pack()
         size = self.icons['zoom-in'].width()
+        self.autofit_button = None
+        if autofit is not None:
+            fit_holder = ResetButton(self, autofit, size=size, glyph='▣')
+            fit_holder.pack(pady=(4,0))
+            self.autofit_button = fit_holder.button
         reset_holder = ResetButton(self, reset, size=size)
         reset_holder.pack(pady=(4,0))
         self.reset_button = reset_holder.button
         # Reserve the maximum readout width so zooming never moves the panes.
         readout_font = font.nametofont('TkDefaultFont')
-        readout = ttk.Frame(self,width=readout_font.measure('6400%')+2,height=readout_font.metrics('linespace')+2)
+        readout = self.readout = ttk.Frame(self,width=readout_font.measure('6400%')+2,height=readout_font.metrics('linespace')+2)
         readout.pack(pady=(4,0))
         readout.pack_propagate(False)
         ttk.Label(readout,textvariable=self.label,anchor='center').pack(fill='both',expand=True)
@@ -142,10 +149,17 @@ class ZoomBar(ttk.Frame):
         zoom.trace_add('write',self.sync)
         self.sync()
 
+    def set_maximum(self, maximum):
+        self.maximum = max(MAX_ZOOM, maximum)
+        self.slider.configure(to=math.log2(self.maximum / MIN_ZOOM))
+        readout_font = font.nametofont('TkDefaultFont')
+        self.readout.configure(width=readout_font.measure(f'{self.maximum:.0f}%')+2)
+        self.sync()
+
     def sync(self,*args):
-        self.position.set(zoom_position(self.zoom.get()))
+        self.position.set(zoom_position(self.zoom.get(), self.maximum))
         self.label.set(f'{self.zoom.get():.0f}%')
 
     def slide(self,value,changed):
-        self.zoom.set(zoom_percent(value))
+        self.zoom.set(zoom_percent(value, self.maximum))
         changed()
