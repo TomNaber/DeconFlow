@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import re
+from numbers import Integral
 from pathlib import Path
 from time import monotonic
 
@@ -42,6 +43,10 @@ OVERWRITE = True
 
 
 def main():
+    for name, value in (("PSF_SIZE_Z", PSF_SIZE_Z), ("PSF_SIZE_XY", PSF_SIZE_XY),
+                        ("OVERSAMPLE_FACTOR", OVERSAMPLE_FACTOR)):
+        if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0 or value % 2 == 0:
+            raise ValueError(f"{name} must be a positive odd integer.")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     started = monotonic()
 

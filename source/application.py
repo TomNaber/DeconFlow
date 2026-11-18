@@ -38,9 +38,9 @@ from source.ui_style import workspace_background
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = Path(os.environ.get('BATCH_DECONVOLUTION_WORKSPACE', ROOT))
 GENERATOR_FIELDS = [
-    ('PSF_SIZE_Z', 'PSF Z size (planes)', 80, int),
-    ('PSF_SIZE_XY', 'PSF X/Y size (pixels)', 40, int),
-    ('OVERSAMPLE_FACTOR', 'Calculation oversampling factor', 2, int),
+    ('PSF_SIZE_Z', 'PSF Z size (planes, odd)', 81, int),
+    ('PSF_SIZE_XY', 'PSF X/Y size (pixels, odd)', 41, int),
+    ('OVERSAMPLE_FACTOR', 'Calculation oversampling factor (odd)', 3, int),
     ('SCAN_DIRECTION', 'Axial scan direction', 'Up', str),
     ('XY_PIXEL_SIZE_UM', 'Lateral pixel size X/Y (µm)', .0801669, float),
     ('Z_STEP_UM', 'Axial sampling interval Z (µm)', .3002, float),
@@ -447,9 +447,12 @@ class Application:
                 increment = .001
             elif name in ('XY_PIXEL_SIZE_UM','Z_STEP_UM'):
                 increment = .001
+            odd_integer = name in ('PSF_SIZE_Z','PSF_SIZE_XY','OVERSAMPLE_FACTOR')
+            if odd_integer:
+                increment = 2
             control = ttk.Spinbox(holder,textvariable=var,width=1,
                                   from_=1 if kind is int else (0 if name=='IMAGING_DEPTH_UM' else 1e-12),
-                                  to=1e12,increment=increment,format='%.12g')
+                                  to=999999999999 if odd_integer else 1e12,increment=increment,format='%.12g')
         else:
             control = ttk.Entry(holder,textvariable=var,width=1)
         control.pack(side='left',fill='x',expand=True)
@@ -999,8 +1002,12 @@ class Application:
             elif kind in (int,float):
                 if not math.isfinite(value) or value<0 or (value==0 and name not in ('IMAGING_DEPTH_UM','RLTV_REGULARIZATION')):
                     raise ValueError()
+            if name in ('PSF_SIZE_Z','PSF_SIZE_XY','OVERSAMPLE_FACTOR') and value % 2 == 0:
+                raise ValueError()
             return value
         except (ValueError,tk.TclError):
+            if name in ('PSF_SIZE_Z','PSF_SIZE_XY','OVERSAMPLE_FACTOR'):
+                raise ValueError(f'Enter a positive odd whole number for {label}.') from None
             raise ValueError(f'Enter a valid value for {label}.') from None
 
     def generator_settings(self):
