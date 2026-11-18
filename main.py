@@ -4,7 +4,7 @@ from pathlib import Path
 import signal
 import sys
 
-from app_version import __version__
+from app_version import __version__, APP_NAME
 
 ROOT = Path(__file__).resolve().parent
 
@@ -26,6 +26,16 @@ def run_worker():
 
 
 def main():
+    if sys.platform == "darwin":
+        from Foundation import NSBundle, NSProcessInfo
+
+        # Tk caches this native name when it creates the macOS menus.
+        # Set it before loading Tk, including when launched through Python.
+        info = NSBundle.mainBundle().infoDictionary()
+        info["CFBundleName"] = APP_NAME
+        info["CFBundleDisplayName"] = APP_NAME
+        NSProcessInfo.processInfo().setProcessName_(APP_NAME)
+
     import tkinter as tk
     from source.application import Application
 
