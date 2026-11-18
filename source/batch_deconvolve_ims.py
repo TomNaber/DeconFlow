@@ -33,6 +33,8 @@ from median_kernels import kernel_zyx
 SOURCE_DIR = Path(__file__).resolve().parent
 ROOT = SOURCE_DIR.parent
 INPUT_DIR = ROOT / "examples"
+PREVIEW_HANDOFF = None
+_preview = None
 INPUT_FILES = None  # Explicit input paths, or None to process the entire input folder.
 PSF_DIR = ROOT / "psfs"
 OUTPUT_DIR = ROOT / "dcv"
@@ -357,6 +359,8 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=
                                   timings=timings, total_started=channel_started,
                                   iterations=CHANNEL_ITERATIONS.get(str(channel_index), ITERATIONS),
                                   regularization=CHANNEL_REGULARIZATION.get(str(channel_index), RLTV_REGULARIZATION))
+                if _preview is not None and time_index == 0:
+                    _preview.attempt(_preview.capture_raw, channel_index, result)
                 if filter_enabled:
                     with ProgressLine(label, f"Post-processing ({post['filter']})",
                                       timings=timings, total_started=channel_started).running():
@@ -365,6 +369,10 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=
                                   total_started=channel_started).running():
                     stored = store_result(result)
                     saturated = int(np.count_nonzero(result > 65535))
+            if _preview is not None and time_index == 0:
+                if preserve:
+                    _preview.attempt(_preview.capture_raw, channel_index, result)
+                _preview.attempt(_preview.capture_result, channel_index, stored)
             with ProgressLine(label, 'Writing channel output', delay=1, timings=timings,
                               total_started=channel_started).running():
                 stored_max = int(stored.max())
@@ -457,6 +465,8 @@ def process_file(input_path, channels, psfs, record=None):
 
     reader = None
     output = None
+    if _preview is not None:
+        _preview.attempt(_preview.start, input_path)
     try:
         if CHANNEL_INDICES == []:
             shutil.copy2(input_path, partial_path)
@@ -526,6 +536,8 @@ def process_file(input_path, channels, psfs, record=None):
             output_path.unlink(missing_ok=True)
             partial_path.replace(output_path)
         record.update(status="completed")
+        if _preview is not None:
+            _preview.attempt(_preview.finish)
         print(f"Finished: {output_path.name}")
     finally:
         reader = None
@@ -535,9 +547,12 @@ def process_file(input_path, channels, psfs, record=None):
         gc.collect()
         array_path.unlink(missing_ok=True)
         partial_path.unlink(missing_ok=True)
+        if _preview is not None:
+            _preview.discard()
 
 
 def main():
+    global _preview
     batch_started = perf_counter()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     names = ('INPUT_DIR', 'INPUT_FILES', 'OUTPUT_DIR', 'TEMP_DIR', 'PSF_DIR', 'PSF_FILES',
@@ -549,6 +564,9 @@ def main():
                 if isinstance(globals()[name], Path) else globals()[name] for name in names}
     if PSF_SOURCE == 'internal':
         settings['PSF_GENERATION_PARAMETERS'] = PSF_GENERATION_PARAMETERS
+    if PREVIEW_HANDOFF:
+        from batch_preview import BatchPreview
+        _preview = BatchPreview(PREVIEW_HANDOFF, settings)
     report = BatchReport(OUTPUT_DIR, settings)
     print(f"Batch report: {report.path}", flush=True)
     with report.capture():

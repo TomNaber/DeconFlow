@@ -287,6 +287,47 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
     return {**cache.original, "channels": projections, "settings": public_settings, "crop": bounds}
 
 
+def import_batch_sample(directory, manifest, cache_directory, previous):
+    """Build a replacement cache off to the side; never damage the displayed one."""
+    path = manifest["path"]
+    if previous is not None and previous.original["path"] == path:
+        volumes = [v for v, _ in previous.volumes.values()]
+        original = previous.original
+    else:
+        volumes, original = load_volume(path)
+    cache = PreviewCache(cache_directory, volumes, original)
+    if manifest["kind"] == "original":
+        return cache, None
+    settings = dict(manifest["settings"])
+    settings["CROP_BOUNDS"] = {a: [0, n] for a, n in zip("zyx", original["shape"])}
+    selected = settings["CHANNEL_INDICES"]
+    if selected is None:
+        selected = list(cache.volumes)
+        settings["CHANNEL_INDICES"] = selected
+    settings["OUTPUT_CHANNEL_NAMES"] = {
+        str(i): settings.get("CHANNEL_EDITS", {}).get(str(i), {}).get("name", c["name"])
+        for i, (_, c) in cache.volumes.items()}
+    projections = []
+    for index in cache.volumes:
+        channel_config = settings
+        if index not in selected:
+            channel_config = {**settings, "CHANNEL_INDICES": [index], "PSF_FILES": [None],
+                              "CHANNEL_POST_PROCESSING": {}}
+        processing = channel_settings(channel_config, index)
+        raw = np.load(Path(directory) / "sample" / f"raw-{index}.npy", allow_pickle=False)
+        if raw.shape != tuple(original["shape"]) or raw.dtype != np.float32:
+            raise ValueError("Batch preview volume does not match the original image")
+        cache.deconvolved[index] = (deconvolution_key(processing), raw)
+        channel = cache.volumes[index][1]
+        with np.load(Path(directory) / "sample" / f"projection-{index}.npz", allow_pickle=False) as data:
+            projection = {**channel, "xy": data["xy"], "yz": data["yz"],
+                          "range": tuple(data["range"]), "processing": processing}
+        cache.results[index] = projection
+        projections.append({**projection, "name": settings["OUTPUT_CHANNEL_NAMES"][str(index)]})
+    return cache, {**original, "batch_result": True, "channels": projections, "settings": settings,
+                   "crop": settings["CROP_BOUNDS"]}
+
+
 def run(connection, path, cache_directory):
     if os.name != "nt":
         os.setsid()
@@ -305,13 +346,28 @@ def run(connection, path, cache_directory):
 
     try:
         started = perf_counter()
-        volumes, projection = load_volume(path)
-        cache = PreviewCache(cache_directory, volumes, projection)
-        connection.send(("loaded", projection))
+        cache = None
+        if path is not None:
+            volumes, projection = load_volume(path)
+            cache = PreviewCache(cache_directory, volumes, projection)
+            connection.send(("loaded", projection))
         while True:
             request = connection.recv()
             if request == "close":
                 break
+            if request[0] == "batch_import":
+                _, directory, manifest = request
+                try:
+                    replacement, result = import_batch_sample(directory, manifest, cache_directory, cache)
+                    for temporary in Path(cache_directory).glob("*.tif"):
+                        temporary.unlink(missing_ok=True)
+                    cache = replacement
+                    connection.send(("batch_imported", (cache.original, result)))
+                except Exception:
+                    connection.send(("batch_failed", traceback.format_exc()))
+                continue
+            if cache is None:
+                continue
             if request == "clear_result":
                 cache.results.clear()
                 cache.deconvolved.clear()

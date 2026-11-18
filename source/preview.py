@@ -2,6 +2,7 @@ import multiprocessing
 import json
 from pathlib import Path
 import queue
+import shutil
 import sys
 from time import perf_counter
 from tempfile import TemporaryDirectory
@@ -47,6 +48,7 @@ class Preview(ttk.Frame):
         self.on_cancel = lambda: self.cancel_deconvolution()
         self.psfs_ready = lambda indices: False
         self.on_activity = lambda: None
+        self.on_batch_sample = lambda original: None
         self.on_log = lambda value: None
         self.on_render_log = lambda value: self.on_log(value)
         self.folder = None
@@ -67,6 +69,9 @@ class Preview(ttk.Frame):
         self.sync_job = None
         self.job_directory = None
         self.cache_directory = None
+        self.batch_directory = None
+        self.batch_importing = False
+        self.batch_status = tk.StringVar()
         self.prepare_job = None
         self.fiji_session = None
         self.request_started = None
@@ -85,6 +90,7 @@ class Preview(ttk.Frame):
         self.projection_job = None
         self.projection_pending = False
         self.disabled = False
+        ttk.Label(self, textvariable=self.batch_status).pack(fill="x")
         self.toolbar_shell = ttk.Frame(self)
         self.toolbar_shell.pack(fill="x", pady=(0, 8))
         self.toolbar = toolbar = ttk.Frame(self.toolbar_shell)
@@ -203,7 +209,7 @@ class Preview(ttk.Frame):
         data = self.deconvolved if row else self.data
         if data is None:
             return []
-        eligible = self.selected_channels if row else None
+        eligible = self.selected_channels if row and not data.get("batch_result") else None
         return [channel for channel in data["channels"]
                 if (eligible is None or channel["index"] in eligible)
                 and (not visible_only or self.channel_visible(channel["index"], row))]
@@ -218,6 +224,8 @@ class Preview(ttk.Frame):
 
     def set_disabled(self, disabled):
         self.disabled = disabled
+        if not disabled:
+            self.batch_status.set("")
         self.update_controls()
 
     def update_controls(self):
@@ -225,13 +233,13 @@ class Preview(ttk.Frame):
         self.files.configure(state="disabled" if disabled else "readonly")
         self.load_button.configure(state="normal" if self.selected_path and not disabled and self.busy != "load" else "disabled")
         self.sync_button.configure(state="disabled" if disabled else "normal")
-        self.zoom_slider.configure(state="normal" if self.data is not None and not disabled else "disabled")
-        self.reset_button.configure(state="normal" if self.data is not None and not disabled else "disabled")
+        self.zoom_slider.configure(state="normal" if self.data is not None else "disabled")
+        self.reset_button.configure(state="normal" if self.data is not None else "disabled")
         ready = (self.matches_loaded() and self.selected_channels and not disabled and self.busy is None
                  and self.crop_drag is None and not self.sync.get())
         ready = ready and self.psfs_ready(self.selected_channels)
         self.deconvolve_button.configure(state="normal" if ready else "disabled")
-        self.export_button.configure(state="normal" if self.images and not disabled else "disabled")
+        self.export_button.configure(state="normal" if self.images else "disabled")
         self.on_activity()
 
     def matches_loaded(self):
@@ -377,12 +385,15 @@ class Preview(ttk.Frame):
         if path is None or self.disabled:
             return
         self.clear()
+        self.start_worker(str(path))
+
+    def start_worker(self, path):
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         try:
             self.cache_directory = TemporaryDirectory(prefix="preview-cache-")
             atomic_json(Path(self.cache_directory.name, "revision"), str(self.revision))
-            self.process = context.Process(target=run, args=(child, str(path), self.cache_directory.name), daemon=True)
+            self.process = context.Process(target=run, args=(child, path, self.cache_directory.name), daemon=True)
             self.process.start()
         except Exception as error:
             self.process = None
@@ -395,10 +406,65 @@ class Preview(ttk.Frame):
             return
         finally:
             child.close()
-        self.busy = "load"
+        self.busy = "load" if path is not None else None
         self.update_controls()
         self.receiver = threading.Thread(target=self.receive, args=(self.connection, self.generation), daemon=True)
         self.receiver.start()
+
+    def begin_batch(self):
+        self.clear()
+        self.batch_directory = TemporaryDirectory(prefix="batch-preview-")
+        self.start_worker(None)
+        if self.connection is None:
+            self.batch_directory.cleanup()
+            self.batch_directory = None
+            raise OSError("Could not start the batch preview worker")
+        return self.batch_directory.name
+
+    def poll_batch(self):
+        if self.batch_directory is None:
+            return
+        directory = Path(self.batch_directory.name)
+        if (directory / "disabled").exists():
+            return
+        try:
+            activity = directory / "activity.json"
+            if self.disabled and activity.exists():
+                current = Path(json.loads(activity.read_text())["path"]).name
+                displayed = Path(self.data["path"]).name if self.data else "waiting for first sample"
+                self.batch_status.set(f"Processing: {current}  |  Displaying: {displayed}")
+            ready = directory / "ready.json"
+            if ready.exists() and not self.batch_importing:
+                manifest = json.loads(ready.read_text())
+                self.connection.send(("batch_import", str(directory), manifest))
+                self.batch_importing = True
+                self.busy = "batch_import"
+        except (OSError, EOFError, ValueError) as error:
+            (directory / "disabled").touch()
+            self.on_log(f"Batch preview unavailable: {error}\n")
+
+    def acknowledge_batch(self):
+        if self.batch_directory is not None:
+            directory = Path(self.batch_directory.name)
+            manifest = json.loads((directory / "ready.json").read_text())
+            if manifest["kind"] == "result":
+                shutil.rmtree(directory / "sample", ignore_errors=True)
+            (directory / "ready.json").unlink(missing_ok=True)
+        self.batch_importing = False
+
+    def adopt_batch(self, original, result):
+        self.data, self.deconvolved = original, result
+        path = Path(original["path"])
+        self.folder = path.parent
+        self.filename.set(path.name)
+        self.crop = {axis: [0, size] for axis, size in zip("zyx", original["shape"])}
+        for mapping in (*self.channel_visibility, *self.channel_contrast):
+            mapping.clear()
+        self.busy = None
+        self.on_batch_sample(original)
+        self.reset_view()
+        self.recolor()
+        self.update_controls()
 
     def receive(self, connection, generation):
         try:
@@ -410,6 +476,7 @@ class Preview(ttk.Frame):
         self.events.put((generation, event))
 
     def poll(self):
+        self.poll_batch()
         try:
             while True:
                 generation, (kind, value) = self.events.get_nowait()
@@ -424,6 +491,16 @@ class Preview(ttk.Frame):
                     continue
                 if kind == "log":
                     self.on_log(value)
+                elif kind == "batch_imported":
+                    self.adopt_batch(*value)
+                    self.acknowledge_batch()
+                elif kind == "batch_failed":
+                    if self.batch_directory is not None:
+                        Path(self.batch_directory.name, "rejected").touch()
+                        self.acknowledge_batch()
+                    self.busy = None
+                    self.update_controls()
+                    self.on_log(f"Batch preview unavailable; saved output is unaffected:\n{value}\n")
                 elif kind == "loaded":
                     self.busy = None
                     self.data = value
@@ -466,8 +543,12 @@ class Preview(ttk.Frame):
                     if self.busy is None and revision != self.revision:
                         self.prepare_inputs()
                 else:
-                    self.clear()
-                    self.on_error(value)
+                    if self.batch_directory is not None:
+                        Path(self.batch_directory.name, "disabled").touch()
+                        self.on_log(f"Batch preview worker stopped: {value}\n")
+                    else:
+                        self.clear()
+                        self.on_error(value)
         except queue.Empty:
             pass
         self.update_initialization()
@@ -485,7 +566,7 @@ class Preview(ttk.Frame):
                     for axis in ("xy", "yz"):
                         self.images[row, axis] = composite(channels, axis, self.preferences, contrast)
             self.draw()
-            self.export_button.configure(state="normal" if self.images and not self.disabled else "disabled")
+            self.export_button.configure(state="normal" if self.images else "disabled")
 
     def reset_zoom(self):
         self.end_pan()
@@ -515,7 +596,7 @@ class Preview(ttk.Frame):
         return max(0, fit) * self.zoom.get() / 100
 
     def set_zoom(self, value, key=None, x=None, y=None):
-        if self.data is None or self.disabled:
+        if self.data is None:
             return
         old_scale = self.view_scale()
         self.zoom.set(min(MAX_ZOOM, max(MIN_ZOOM, value)))
@@ -537,7 +618,7 @@ class Preview(ttk.Frame):
         return "break"
 
     def pinch(self, target, x, y, amount):
-        if self.data is None or self.disabled:
+        if self.data is None:
             return False
         for key, canvas in self.canvases.items():
             if target is canvas:
@@ -547,7 +628,7 @@ class Preview(ttk.Frame):
         return False
 
     def start_pan(self, event, key):
-        if self.data is not None and not self.disabled:
+        if self.data is not None:
             self.drag = key, event.x, event.y, dict(self.center)
             self.canvases[key].configure(cursor="fleur")
 
@@ -792,6 +873,8 @@ class Preview(ttk.Frame):
         self.update_controls()
 
     def clear(self):
+        if self.batch_directory is not None:
+            Path(self.batch_directory.name, "disabled").touch()
         if self.projection_job is not None:
             self.after_cancel(self.projection_job)
             self.projection_job = None
@@ -833,6 +916,11 @@ class Preview(ttk.Frame):
         if self.cache_directory is not None:
             self.cache_directory.cleanup()
             self.cache_directory = None
+        if self.batch_directory is not None:
+            self.batch_directory.cleanup()
+            self.batch_directory = None
+        self.batch_importing = False
+        self.batch_status.set("")
         self.data = None
         self.deconvolved = None
         for visibility in self.channel_visibility:

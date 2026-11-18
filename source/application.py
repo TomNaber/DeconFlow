@@ -95,6 +95,7 @@ class Application:
         self.events = queue.Queue()
         self.process = self.running = self.pending = None
         self.batch_locked = False
+        self.batch_channels_changed = False
         self.export_task = None
         self.cancelled = False
         self.revision = 0
@@ -129,6 +130,7 @@ class Application:
         self.preview.request_psfs = lambda automatic=False:self.request('preview', automatic)
         self.preview.on_cancel = self.cancel
         self.preview.on_activity = self.update_activity
+        self.preview.on_batch_sample = self.adopt_batch_channels
         self.preview.on_log = self.append_log
         self.preview.on_render_log = self.render_log
         self.window.protocol('WM_DELETE_WINDOW', self.close)
@@ -1275,8 +1277,10 @@ class Application:
 
     def launch(self,settings,stage,request):
         if stage == 'batch':
+            handoff = self.preview.begin_batch()
             session = self.preview.configure_fiji(settings['FIJI_MEMORY'])
-            settings = dict(settings, FIJI_SESSION=str(session.directory))
+            settings = dict(settings, FIJI_SESSION=str(session.directory),
+                            PREVIEW_HANDOFF=handoff)
         child = subprocess.Popen([sys.executable,'-u',str(ROOT/'main.py'),'--worker'],stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',
                                  errors='replace',cwd=ROOT,**process_session_options())
@@ -1332,6 +1336,38 @@ class Application:
         self.log('\nCancelled pending work.\n')
         self.update_activity()
 
+    def adopt_batch_channels(self, original):
+        # Keep the processing recipe and its PSFs intact while adopting the
+        # displayed sample's channel labels. New, preserved channels start off.
+        definitions = {value.get('input_index', int(key)): dict(value)
+                       for key,value in self.definitions.items()}
+        self.definitions = {str(index): dict(value,input_index=index)
+                            for index,value in definitions.items()}
+        self.active_channels = [{key:channel[key] for key in ('index','name','color')}
+                                for channel in original['channels']]
+        self.signature = [channel['name'] for channel in self.active_channels]
+        for channel in self.active_channels:
+            index = channel['index']
+            key = str(index)
+            pref = self.preferences.setdefault(key, dict(name='',color='Original',enabled=False,
+                                                        iterations=40,regularization=self.default_regularization))
+            definition = definitions.get(index, dict(name=channel['name'],excitation_nm='',emission_nm=''))
+            self.definitions[key] = dict(definition,input_index=index)
+            if key not in self.enabled_vars:
+                var = tk.BooleanVar(value=pref.get('enabled',True))
+                var.trace_add('write',lambda *args,key=key:self.selection_changed(key))
+                self.enabled_vars[key] = var
+        self.batch_channels_changed = True
+        if not self.batch_locked:
+            self.render_batch_channels()
+
+    def render_batch_channels(self):
+        if self.batch_channels_changed:
+            self.batch_channels_changed = False
+            self.render_definitions()
+            self.render_external_channels()
+            self.render_channels()
+
     def set_batch_locked(self,locked):
         self.batch_locked = locked
         if locked:
@@ -1347,6 +1383,7 @@ class Application:
                 if widget.winfo_exists():
                     widget.configure(state=state)
             self.locked_widgets.clear()
+            self.render_batch_channels()
         self.preview.set_disabled(locked)
         self.restore_button.configure(state='disabled' if locked else 'normal')
 
