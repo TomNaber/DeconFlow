@@ -38,25 +38,24 @@ from source.ui_style import workspace_background
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = Path(os.environ.get('BATCH_DECONVOLUTION_WORKSPACE', ROOT))
 GENERATOR_FIELDS = [
-    ('PSF_SIZE_Z', 'PSF Z size (planes, odd)', 81, int),
-    ('PSF_SIZE_XY', 'PSF X/Y size (pixels, odd)', 41, int),
+    ('PSF_SIZE_Z', 'PSF Z size (planes, odd)', 101, int),
+    ('PSF_SIZE_XY', 'PSF X/Y size (pixels, odd)', 81, int),
     ('OVERSAMPLE_FACTOR', 'Calculation oversampling factor (odd)', 3, int),
-    ('SCAN_DIRECTION', 'Axial scan direction', 'Up', str),
-    ('XY_PIXEL_SIZE_UM', 'Lateral pixel size X/Y (µm)', .0801669, float),
-    ('Z_STEP_UM', 'Axial sampling interval Z (µm)', .3002, float),
-    ('NUMERICAL_APERTURE', 'Objective numerical aperture', 1.4, float),
-    ('SPECIMEN_RI', 'Specimen refractive index', 1.45, float),
-    ('OBJECTIVE_WORKING_DISTANCE_UM', 'Objective working distance (µm)', 140., float),
+    ('SCAN_DIRECTION', 'Axial scan direction', '', str),
+    ('XY_PIXEL_SIZE_UM', 'Lateral pixel size X/Y (µm)', '', float),
+    ('Z_STEP_UM', 'Axial sampling interval Z (µm)', '', float),
+    ('NUMERICAL_APERTURE', 'Objective numerical aperture', '', float),
+    ('SPECIMEN_RI', 'Specimen refractive index', '', float),
+    ('OBJECTIVE_WORKING_DISTANCE_UM', 'Objective working distance (µm)', '', float),
     ('IMAGING_DEPTH_UM', 'Imaging depth (µm)', 20., float),
-    ('PINHOLE_AIRY_UNITS', 'Confocal pinhole (Airy units)', 1., float),
+    ('PINHOLE_AIRY_UNITS', 'Confocal pinhole (Airy units)', '', float),
 ]
 PAIRS = [
     ('IMMERSION_RI_DESIGN', 'IMMERSION_RI_ACTUAL', 'Immersion refractive index', 1.518),
-    ('COVERSLIP_RI_DESIGN', 'COVERSLIP_RI_ACTUAL', 'Coverslip refractive index', 1.52),
+    ('COVERSLIP_RI_DESIGN', 'COVERSLIP_RI_ACTUAL', 'Coverslip refractive index', 1.518),
     ('COVERSLIP_THICKNESS_DESIGN_UM', 'COVERSLIP_THICKNESS_ACTUAL_UM', 'Coverslip thickness (µm)', 170.),
 ]
-DEFAULT_CHANNELS = [dict(name=n, excitation_nm=x, emission_nm=e) for n,x,e in
-                    [('Alexa488',488,525),('Alexa568',552,603),('Alexa647',638,671)]]
+DEFAULT_CHANNELS = []
 
 
 def default_memory_gb():
@@ -92,7 +91,7 @@ class Application:
         self.signature = []
         self.channel_vars, self.definition_vars = {}, {}
         self.enabled_vars, self.external_vars = {}, {}
-        self.default_regularization = .0001
+        self.default_regularization = .002
         self.session = PSFSession()
         self.events = queue.Queue()
         self.process = self.running = self.pending = None
@@ -240,7 +239,7 @@ class Application:
         offset = len(GENERATOR_FIELDS)-3
         for index,(design,actual,label,default) in enumerate(PAIRS):
             self.field(self.optics,'PSF generation',offset+index*2,design,label+' (design)',default,float)
-            self.field(self.optics,'PSF generation',offset+index*2+1,actual,label+' (actual)',{'IMMERSION_RI_ACTUAL':1.518,'COVERSLIP_RI_ACTUAL':1.5255,'COVERSLIP_THICKNESS_ACTUAL_UM':145.}[actual],float)
+            self.field(self.optics,'PSF generation',offset+index*2+1,actual,label+' (actual)','',float)
         self.definition_panel = ttk.Frame(self.optics)
         self.definition_panel.grid(row=offset+len(PAIRS)*2,column=0,columnspan=2,sticky='ew',pady=(1,8))
         self.deconvolution = self.group('Deconvolution')
@@ -442,7 +441,7 @@ class Application:
         elif name == 'SCAN_DIRECTION':
             control = ttk.Combobox(holder,textvariable=var,values=('Up','Down'),state='readonly',width=8)
         elif kind in (int,float):
-            increment = 1 if kind is int or name.endswith('_UM') and default>=1 else .01
+            increment = 1 if kind is int or name.endswith('_UM') and default != '' and default>=1 else .01
             if 'RI_' in name or name.endswith('_RI'):
                 increment = .001
             elif name in ('XY_PIXEL_SIZE_UM','Z_STEP_UM'):
@@ -642,7 +641,7 @@ class Application:
         self.enabled_vars.clear()
         for channel in self.active_channels:
             key = str(channel['index'])
-            self.preferences.setdefault(key,dict(name='',color='Original',enabled=True,iterations=40))
+            self.preferences.setdefault(key,dict(name='',color='Original',enabled=True,iterations=20))
             self.definitions.setdefault(key,dict(name=channel['name'],excitation_nm='',emission_nm=''))
             self.preferences[key].setdefault('regularization',self.default_regularization)
             var = tk.BooleanVar(value=self.preferences[key].get('enabled',True))
@@ -804,7 +803,7 @@ class Application:
             name = tk.StringVar(value=pref['name'])
             color = tk.StringVar(value=pref['color'])
             regularization = tk.StringVar(value=pref.get('regularization',self.default_regularization))
-            iterations = tk.StringVar(value=pref.get('iterations',40))
+            iterations = tk.StringVar(value=pref.get('iterations',20))
             input_cell = ttk.Frame(self.channel_panel)
             input_cell.grid(row=row,column=0,sticky='w',padx=(0,3))
             ttk.Checkbutton(input_cell,variable=enabled).pack(side='left')
@@ -1090,7 +1089,7 @@ class Application:
         for index in indices:
             pref = self.preferences[str(index)]
             try:
-                iterations = int(pref.get('iterations',40)) if pref.get('enabled',True) else 40
+                iterations = int(pref.get('iterations',20)) if pref.get('enabled',True) else 20
                 if iterations<1:
                     raise ValueError()
             except (ValueError,TypeError):
@@ -1368,7 +1367,7 @@ class Application:
             index = channel['index']
             key = str(index)
             pref = self.preferences.setdefault(key, dict(name='',color='Original',enabled=False,
-                                                        iterations=40,regularization=self.default_regularization))
+                                                        iterations=20,regularization=self.default_regularization))
             definition = definitions.get(index, dict(name=channel['name'],excitation_nm='',emission_nm=''))
             self.definitions[key] = dict(definition,input_index=index)
             if key not in self.enabled_vars:
@@ -1593,7 +1592,7 @@ class Application:
         try:
             config.read(self.settings_path if self.settings_path.exists() else ROOT/'userdata'/'settings.ini',encoding='utf-8')
             self.ignored_update_version = config.get('Updates','ignored_version',fallback='')
-            self.default_regularization = config.getfloat('Deconvolution','rltv_regularization',fallback=.0001)
+            self.default_regularization = config.getfloat('Deconvolution','rltv_regularization',fallback=.002)
             for group,entries in self.fields.items():
                 for name,(var,kind,_) in entries.items():
                     if config.has_option(group,name):
@@ -1656,7 +1655,7 @@ class Application:
             for name,value in entries.items():
                 self.fields[group][name][0].set(value)
         self.preferences.clear()
-        self.default_regularization = .0001
+        self.default_regularization = .002
         self.definitions = {str(i):copy.deepcopy(c) for i,c in enumerate(DEFAULT_CHANNELS)}
         self.assignments = {'internal':{},'external':{}}
         self.imported_files = []
