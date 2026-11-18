@@ -12,7 +12,14 @@ try {
         $lock = [System.IO.File]::Open("$runtime.lock", 'OpenOrCreate', 'ReadWrite', 'None')
         try {
             if (-not (Test-Path "$runtime\.ready")) {
-                Expand-Archive -LiteralPath "$PSScriptRoot\runtime.zip" -DestinationPath $runtime -Force
+                # Retry incomplete setup from a clean directory while holding the lock.
+                if (Test-Path -LiteralPath $runtime) {
+                    Remove-Item -LiteralPath $runtime -Recurse -Force
+                }
+                # Launch.cmd uses Windows PowerShell 5.1 (.NET Framework).
+                # Avoid Expand-Archive module/version conflicts inherited from pwsh.
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                [System.IO.Compression.ZipFile]::ExtractToDirectory("$PSScriptRoot\runtime.zip", $runtime)
                 & "$runtime\python.exe" "$runtime\Scripts\conda-unpack-script.py"
                 if ($LASTEXITCODE -ne 0) { throw 'Runtime setup failed.' }
                 & "$runtime\@JAVA_HOME@\bin\java.exe" -version

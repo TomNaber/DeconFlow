@@ -142,7 +142,11 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
           if gh release view "$RELEASE_TAG" --json isDraft > release.json 2>/dev/null; then
-            python -c "import json; assert json.load(open('release.json'))['isDraft'], 'Refusing to modify a published release'"
+            is_draft=$(python -c "import json; print(str(json.load(open('release.json'))['isDraft']).lower())")
+            if [ "$is_draft" = false ]; then
+              echo "::notice::Release $RELEASE_TAG is already published; skipping draft staging. Installer artifacts are available in this workflow run."
+              exit 0
+            fi
           else
             gh release create "$RELEASE_TAG" --draft --target "$RELEASE_COMMIT" --title "DeconFlow $RELEASE_TAG" --generate-notes
           fi
