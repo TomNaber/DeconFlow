@@ -7,12 +7,13 @@ import platform
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 from tkinter import messagebox
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
@@ -37,7 +38,7 @@ def fetch(url, binary=False):
     token = os.environ.get('DECONFLOW_GITHUB_TOKEN')
     if token:
         headers['Authorization'] = f'Bearer {token}'
-    return build_opener(SafeRedirect()).open(Request(url, headers=headers), timeout=30)
+    return build_opener(SafeRedirect()).open(Request(url, headers=headers), timeout=30 if binary else 5)
 
 
 def version_tuple(value):
@@ -58,6 +59,9 @@ def installation_root():
 
 
 def latest_release():
+    # Skip the release request when GitHub cannot be reached. This runs off the UI thread.
+    with socket.create_connection(('api.github.com', 443), timeout=3):
+        pass
     repo = REPOSITORY_URL.removeprefix('https://github.com/')
     with fetch(f'https://api.github.com/repos/{repo}/releases/latest') as response:
         release = json.load(response)
@@ -105,9 +109,27 @@ class UpdateController:
         self.ready = None
         self.directory = None
         self.dialog = None
+        self.active = False
+        self.manual = False
         if self.root is not None:
-            self.run('release', latest_release)
+            self.check()
             app.window.after(250, self.poll)
+
+    def check(self, manual=False):
+        if self.root is None:
+            if manual:
+                messagebox.showinfo('Check for updates',
+                    'Automatic installation of updates is available in installed copies of DeconFlow.',
+                    parent=self.app.window)
+            return
+        if self.active:
+            if manual:
+                messagebox.showinfo('Check for updates', 'An update check or update is already in progress.',
+                                    parent=self.app.window)
+            return
+        self.active = True
+        self.manual = manual
+        self.run('release', latest_release)
 
     def run(self, kind, action):
         def work():
@@ -126,28 +148,49 @@ class UpdateController:
         except queue.Empty:
             kind, value = None, None
         if kind == 'check_error':
+            self.active = False
+            offline = isinstance(value, (URLError, OSError)) and not isinstance(value, HTTPError)
             explanation = ('No published release is accessible. Private repositories require '
                            'DECONFLOW_GITHUB_TOKEN with read-only Contents access.'
                            if isinstance(value, HTTPError) and value.code == 404 else str(value))
-            self.app.log(f'Update check: {explanation}\n')
+            if self.manual:
+                messagebox.showinfo('Check for updates',
+                    'Cannot reach the update server. Check your internet connection and try again.'
+                    if offline else explanation, parent=self.app.window)
+            elif not offline:
+                self.app.log(f'Update check: {explanation}\n')
         elif kind == 'error':
+            self.active = False
             self.dismiss()
             if self.directory:
                 shutil.rmtree(self.directory, ignore_errors=True)
             messagebox.showerror('Update failed', str(value), parent=self.app.window)
-        elif kind == 'release' and value:
-            self.ready = ('offer', value)
+        elif kind == 'release':
+            ignored = False
+            if value and not self.manual and self.app.ignored_update_version:
+                try:
+                    ignored = version_tuple(value[0]) <= version_tuple(self.app.ignored_update_version)
+                except ValueError:
+                    pass
+            if value and not ignored:
+                self.ready = ('offer', value)
+            else:
+                self.active = False
+                if self.manual:
+                    messagebox.showinfo('Check for updates', 'DeconFlow is up to date.', parent=self.app.window)
         elif kind == 'download':
             self.ready = ('install', value)
         if self.ready and not self.busy():
             stage, value = self.ready
             self.ready = None
             if stage == 'offer':
-                if messagebox.askyesno('DeconFlow update',
-                    f'DeconFlow {value[0].removeprefix("v")} is available (installed: {__version__}).\n\n'
-                    'Download and install it now? DeconFlow will close and relaunch automatically.',
-                    parent=self.app.window):
+                choice = self.offer(value[0])
+                if choice == 'ignore':
+                    self.app.ignored_update_version = value[0]
+                    self.app.save_settings()
+                if choice == 'update':
                     if not os.access(self.root.parent, os.W_OK) or not os.access(self.root, os.W_OK):
+                        self.active = False
                         messagebox.showerror('Update unavailable',
                             'The installation is read-only. Move DeconFlow to a writable Applications folder '
                             'or ask your administrator to update it.', parent=self.app.window)
@@ -155,6 +198,8 @@ class UpdateController:
                         self.directory = Path(tempfile.mkdtemp(prefix='deconflow-update-'))
                         self.show_progress()
                         self.run('download', lambda: download(value, self.directory))
+                else:
+                    self.active = False
             else:
                 try:
                     self.app.save_settings()
@@ -170,9 +215,43 @@ class UpdateController:
                     self.app.close()
                     return
                 except Exception as error:
+                    self.active = False
                     self.dismiss()
                     messagebox.showerror('Update failed', str(error), parent=self.app.window)
         self.app.window.after(250, self.poll)
+
+    def offer(self, version):
+        import tkinter as tk
+        from tkinter import ttk
+        dialog = tk.Toplevel(self.app.window)
+        dialog.title('DeconFlow update')
+        dialog.transient(self.app.window)
+        dialog.resizable(False, False)
+        choice = 'cancel'
+
+        def finish(value):
+            nonlocal choice
+            choice = value
+            dialog.destroy()
+
+        ttk.Label(dialog,
+            text=f'DeconFlow {version.removeprefix("v")} is available (installed: {__version__}).\n\n'
+                 'Download and install it now? DeconFlow will close and relaunch automatically.',
+            padding=20, wraplength=460).pack()
+        buttons = ttk.Frame(dialog, padding=(20, 0, 20, 20))
+        buttons.pack(fill='x')
+        if not self.manual:
+            ttk.Button(buttons, text='Ignore this update', command=lambda: finish('ignore')).pack(side='left')
+        update = ttk.Button(buttons, text='Update', command=lambda: finish('update'))
+        update.pack(side='right')
+        ttk.Button(buttons, text='Cancel', command=lambda: finish('cancel')).pack(side='right', padx=8)
+        dialog.protocol('WM_DELETE_WINDOW', lambda: finish('cancel'))
+        dialog.bind('<Escape>', lambda event: finish('cancel'))
+        dialog.wait_visibility()
+        dialog.grab_set()
+        update.focus_set()
+        self.app.window.wait_window(dialog)
+        return choice
 
     def show_progress(self):
         import tkinter as tk

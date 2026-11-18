@@ -120,6 +120,7 @@ class Application:
                 base = Path(os.environ.get('XDG_DATA_HOME') or Path.home()/'.local'/'share')
             settings_path = base/'Batch Deconvolution'/'settings.ini'
         self.settings_path = Path(settings_path)
+        self.ignored_update_version = ''
         self.build()
         self.load_settings()
         self.loading = False
@@ -292,6 +293,7 @@ class Application:
             menu.add_cascade(label=APP_NAME, menu=app_menu)
             self.window.createcommand('tk::mac::ShowAbout', self.show_about)
         help_menu = tk.Menu(menu, name='help', tearoff=False)
+        help_menu.add_command(label='Check for updates…', command=lambda: self.updater.check(manual=True))
         help_menu.add_command(label=f'{APP_NAME} on GitHub', command=self.open_github)
         if sys.platform != 'darwin':
             help_menu.add_separator()
@@ -1550,6 +1552,7 @@ class Application:
         if self.loading:
             return
         config = configparser.ConfigParser(interpolation=None)
+        config['Updates'] = dict(ignored_version=self.ignored_update_version)
         for group,entries in self.fields.items():
             config[group] = {name:str(var.get()) for name,(var,_,_) in entries.items()}
         for name,var in self.auto_spacing_vars.items():
@@ -1573,6 +1576,7 @@ class Application:
         config = configparser.ConfigParser(interpolation=None)
         try:
             config.read(self.settings_path if self.settings_path.exists() else ROOT/'userdata'/'settings.ini',encoding='utf-8')
+            self.ignored_update_version = config.get('Updates','ignored_version',fallback='')
             self.default_regularization = config.getfloat('Deconvolution','rltv_regularization',fallback=.0001)
             for group,entries in self.fields.items():
                 for name,(var,kind,_) in entries.items():
