@@ -11,9 +11,10 @@ import numpy as np
 NEUTRAL_CONTRAST = (0.0, 0.5, 1.0)
 
 
-def format_intensity(value):
-    """Compact half-unit readouts; derived midpoints retain exact gamma internally."""
-    return f'{round(value * 2) / 2:.1f}'.removesuffix('.0')
+def format_intensity(value, step=0.5):
+    """Compact stepped readouts; derived midpoints retain exact gamma internally."""
+    decimals = 3 if step == 0.005 else 2 if step == 0.01 else 1
+    return f'{round(value / step) * step:.{decimals}f}'.rstrip('0').rstrip('.')
 
 
 def contrast_range(channel):
@@ -32,12 +33,12 @@ def apply_contrast(intensity, contrast):
 
 class ContrastSlider(tk.Canvas):
     """Three draggable handles in normalized display coordinates."""
-    def __init__(self, parent, command, limits):
+    def __init__(self, parent, command, limits, *, psf=False):
         super().__init__(parent, width=120, height=24, highlightthickness=0,
                          takefocus=True, background=ttk.Style(parent).lookup('TFrame', 'background') or '#eeeeee')
         self.command = command
         self.low, self.high = limits
-        self.increment = 0.5 / (self.high - self.low)
+        self.steps = (0.01, 0.005, 0.01) if psf else (1.0, 0.5, 1.0)
         self.values = NEUTRAL_CONTRAST
         # Keep data normalization fixed while allowing the slider track to expand.
         self.maximum = 1.0
@@ -45,8 +46,8 @@ class ContrastSlider(tk.Canvas):
         self.bind('<Configure>', self.draw)
         self.bind('<Button-1>', self.press)
         self.bind('<B1-Motion>', self.drag)
-        self.bind('<Left>', lambda event: self.step(-self.increment))
-        self.bind('<Right>', lambda event: self.step(self.increment))
+        self.bind('<Left>', lambda event: self.step(-1))
+        self.bind('<Right>', lambda event: self.step(1))
         self.bind('<Up>', lambda event: self.select(-1))
         self.bind('<Down>', lambda event: self.select(1))
 
@@ -74,13 +75,14 @@ class ContrastSlider(tk.Canvas):
                         (black + gap, maximum) if self.active == 2 else
                         (black + (white - black) * gap, white - (white - black) * gap))
         span = self.high - self.low
-        first_bin = math.ceil((self.low + lower * span) * 2)
-        last_bin = math.floor((self.low + upper * span) * 2)
+        step = self.steps[self.active]
+        first_bin = math.ceil((self.low + lower * span) / step - 1e-10)
+        last_bin = math.floor((self.low + upper * span) / step + 1e-10)
         if first_bin > last_bin:
             self.command(self.values)
             return
-        native_bin = min(last_bin, max(first_bin, round((self.low + value * span) * 2)))
-        value = (native_bin / 2 - self.low) / span
+        native_bin = min(last_bin, max(first_bin, round((self.low + value * span) / step)))
+        value = (native_bin * step - self.low) / span
         if self.active == 0:
             black = min(white - gap, max(0.0, value))
             midpoint = black + fraction * (white - black)
@@ -112,7 +114,8 @@ class ContrastSlider(tk.Canvas):
         self.move((event.x - 10) / max(1, self.winfo_width() - 20) * self.maximum + self.drag_offset)
 
     def step(self, delta):
-        self.move(self.values[self.active] + delta)
+        increment = self.steps[self.active] / (self.high - self.low)
+        self.move(self.values[self.active] + delta * increment)
         return 'break'
 
     def select(self, delta):
@@ -177,8 +180,8 @@ class ChannelAdjustment(ttk.Notebook):
             checkbox.set(visible)
             slider.set(contrast)
             low, high = limits
-            for entry, value in zip(entries, contrast):
-                entry.set(format_intensity(low + value * (high - low)))
+            for entry, value, step in zip(entries, contrast, slider.steps):
+                entry.set(format_intensity(low + value * (high - low), step))
         return structure_changed
 
     def add_row(self, row, kind, index, name, limits):
@@ -192,15 +195,15 @@ class ChannelAdjustment(ttk.Notebook):
 
         def set_value(contrast):
             slider.set(contrast)
-            for entry, value in zip(entries, contrast):
-                entry.set(format_intensity(low + value * (high - low)))
+            for entry, value, step in zip(entries, contrast, slider.steps):
+                entry.set(format_intensity(low + value * (high - low), step))
             self.changed(kind, index, contrast=contrast)
 
-        slider = ContrastSlider(self.table, set_value, limits)
+        slider = ContrastSlider(self.table, set_value, limits, psf=kind == 'PSF')
         slider.grid(row=row, column=2, sticky='ew', padx=4)
 
         def commit(index):
-            current = format_intensity(low + slider.values[index] * (high - low))
+            current = format_intensity(low + slider.values[index] * (high - low), slider.steps[index])
             if entries[index].get() == current:
                 return
             try:
@@ -208,11 +211,11 @@ class ChannelAdjustment(ttk.Notebook):
                 if not np.isfinite(value):
                     raise ValueError()
             except ValueError:
-                entries[index].set(format_intensity(low + slider.values[index] * (high - low)))
+                entries[index].set(format_intensity(low + slider.values[index] * (high - low), slider.steps[index]))
                 return
             slider.active = index
             slider.move(value, extend=index == 2)
-            entries[index].set(format_intensity(low + slider.values[index] * (high - low)))
+            entries[index].set(format_intensity(low + slider.values[index] * (high - low), slider.steps[index]))
 
         for point_index, column in ((0, 1), (2, 3), (1, 4)):
             entry = ttk.Entry(self.table, textvariable=entries[point_index], width=6, justify='right')
