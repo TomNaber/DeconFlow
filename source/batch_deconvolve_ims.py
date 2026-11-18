@@ -594,6 +594,7 @@ def main():
 def run_batch(report):
     input_files = (sorted(INPUT_DIR.glob("*.ims")) if INPUT_FILES is None else
                    [Path(path).expanduser() for path in INPUT_FILES])
+    input_files = [path for path in input_files if not path.name.startswith(".")]
     report.data['files'] = [dict(filename=path.name, input_path=str(path.resolve()),
                                  status='pending') for path in input_files]
     report.save()

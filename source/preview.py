@@ -224,7 +224,8 @@ class Preview(ttk.Frame):
 
     def set_folder(self, folder):
         self.folder = Path(folder).expanduser()
-        names = [path.name for path in sorted(self.folder.glob("*.ims")) if path.is_file()] if self.folder.is_dir() else []
+        names = [path.name for path in sorted(self.folder.glob("*.ims"))
+                 if not path.name.startswith(".") and path.is_file()] if self.folder.is_dir() else []
         self.files.configure(values=names)
         if self.filename.get() not in names:
             self.filename.set(names[0] if names else "")
