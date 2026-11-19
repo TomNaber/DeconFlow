@@ -55,7 +55,89 @@ PAIRS = [
     ('COVERSLIP_RI_DESIGN', 'COVERSLIP_RI_ACTUAL', 'Coverslip refractive index', 1.518),
     ('COVERSLIP_THICKNESS_DESIGN_UM', 'COVERSLIP_THICKNESS_ACTUAL_UM', 'Coverslip thickness (µm)', 170.),
 ]
+TOOLTIPS = {
+    'PSF_SIZE_Z': 'Number of planes in the generated PSF. Use an odd number for a central plane.',
+    'PSF_SIZE_XY': 'Width and height of each PSF plane in pixels. Use an odd number for a central pixel.',
+    'OVERSAMPLE_FACTOR': 'A higher factor calculates the PSF on a finer grid and takes longer.',
+    'SCAN_DIRECTION': 'Direction the focal plane moved relative to the objective as the stack was acquired.',
+    'XY_PIXEL_SIZE_UM': 'Width of one image pixel at the specimen.',
+    'Z_STEP_UM': 'Distance between consecutive planes in the acquired stack.',
+    'NUMERICAL_APERTURE': 'Use the NA marked on the objective, such as 1.40.',
+    'SPECIMEN_RI': 'Refractive index around the structure of interest, typically that of the mounting medium.',
+    'OBJECTIVE_WORKING_DISTANCE_UM': ('Distance from the objective’s front lens to the coverslip at focus, '
+                                      'as specified by the manufacturer.'),
+    'IMAGING_DEPTH_UM': 'Distance from the specimen-facing surface of the coverslip to the structure of interest.',
+    'PINHOLE_AIRY_UNITS': 'Pinhole diameter used during acquisition, in Airy units.',
+    'IMMERSION_RI_DESIGN': 'Refractive index of the immersion medium the objective was designed for.',
+    'IMMERSION_RI_ACTUAL': 'Refractive index of the immersion medium used during imaging.',
+    'COVERSLIP_RI_DESIGN': 'Refractive index of the coverslip glass the objective was designed for.',
+    'COVERSLIP_RI_ACTUAL': 'Refractive index of the coverslip glass used during imaging.',
+    'COVERSLIP_THICKNESS_DESIGN_UM': 'Coverslip thickness specified for the objective, often 170 µm.',
+    'COVERSLIP_THICKNESS_ACTUAL_UM': 'Thickness of the coverslip used during imaging.',
+    'Excitation (nm)': 'Wavelength used to excite this channel, typically the laser wavelength.',
+    'Emission (nm)': 'Representative wavelength of the fluorescence detected in this channel.',
+    'Filter': ('Median: Removes isolated bright or dark specks by taking the median of nearby pixels.\n'
+               'Gaussian: Smooths noise by averaging nearby pixels, which also softens edges.\n'
+               'Bilateral: Smooths noise while preserving edges by giving more weight to nearby pixels '
+               'of similar intensity.'),
+    'Kernel': ('For median filtering, sets the neighborhood size in X × Y × Z pixels. '
+               'For Gaussian and bilateral filtering, sets the smoothing width (σ) in µm.'),
+    'Intensity': ('Sets how similar pixel intensities must be for bilateral smoothing. '
+                  'Lower values preserve weaker edges. Higher values smooth across larger intensity differences.'),
+    'Regularization': 'Higher values reduce noise amplification at the cost of fine detail.',
+    'Iterations': ('Higher signal-to-noise ratios support more iterations. '
+                   'For images with a low signal-to-noise ratio, 3–10 iterations may be optimal.'),
+}
 DEFAULT_CHANNELS = []
+
+
+def parameter_caption(parent, label, key, **options):
+    if key not in TOOLTIPS:
+        return ttk.Label(parent, text=label, **options)
+    frame = ttk.Frame(parent)
+    ttk.Label(frame, text=label, **options).pack(side='left')
+    icon = ttk.Label(frame, text='ⓘ', takefocus=True)
+    icon.pack(side='left', padx=(2, 0))
+    timer = popup = None
+
+    def hide(event=None):
+        nonlocal timer, popup
+        if timer is not None:
+            icon.after_cancel(timer)
+            timer = None
+        if popup is not None:
+            popup.destroy()
+            popup = None
+
+    def show():
+        nonlocal timer, popup
+        timer = None
+        popup = tk.Toplevel(icon)
+        popup.withdraw()
+        popup.overrideredirect(True)
+        if popup.tk.call('tk', 'windowingsystem') == 'aqua':
+            popup.tk.call('::tk::unsupported::MacWindowStyle', 'style', popup, 'help', 'noActivates')
+        ttk.Label(popup, text=TOOLTIPS[key], padding=6, relief='solid', borderwidth=1,
+                  wraplength=300, justify='left').pack()
+        popup.update_idletasks()
+        x = min(icon.winfo_rootx(), icon.winfo_screenwidth() - popup.winfo_reqwidth())
+        y = icon.winfo_rooty() + icon.winfo_height() + 2
+        if y + popup.winfo_reqheight() > icon.winfo_screenheight():
+            y = icon.winfo_rooty() - popup.winfo_reqheight() - 2
+        popup.geometry(f'+{max(0, x)}+{max(0, y)}')
+        popup.deiconify()
+        popup.lift()
+
+    def schedule(event):
+        nonlocal timer
+        hide()
+        timer = icon.after(350, show)
+
+    for sequence in ('<Enter>', '<FocusIn>'):
+        icon.bind(sequence, schedule)
+    for sequence in ('<Leave>', '<FocusOut>', '<Escape>', '<Unmap>', '<Destroy>'):
+        icon.bind(sequence, hide)
+    return frame
 
 
 def browse_initial_directory(value, *, file_path=False):
@@ -439,7 +521,7 @@ class Application:
         var = tk.BooleanVar(value=default) if kind is bool else tk.StringVar(value=str(default))
         self.fields.setdefault(group,{})[name] = (var,kind,label)
         self.defaults.setdefault(group,{})[name] = default
-        caption = ttk.Label(parent,text=label,wraplength=250)
+        caption = parameter_caption(parent,label,name,wraplength=250)
         caption.grid(row=row,column=0,sticky='w',padx=(0,8),pady=3)
         holder = ttk.Frame(parent)
         holder.grid(row=row,column=1,sticky='ew',pady=3)
@@ -737,7 +819,7 @@ class Application:
         self.definition_vars.clear()
         labels = self.input_labels()
         for col,label in enumerate(('Input channel','Channel name','Excitation (nm)','Emission (nm)')):
-            ttk.Label(self.definition_panel,text=label).grid(row=0,column=col,sticky='w',padx=(0 if col==0 else 3,3))
+            parameter_caption(self.definition_panel,label,label).grid(row=0,column=col,sticky='w',padx=(0 if col==0 else 3,3))
             self.definition_panel.columnconfigure(col,weight=1)
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
@@ -811,7 +893,7 @@ class Application:
             widget.destroy()
         self.channel_vars.clear()
         for col,label in enumerate(('Input channel','New name','Pseudocolor','Regularization','Iterations')):
-            ttk.Label(self.channel_panel,text=label).grid(row=0,column=col,sticky='w',padx=(0 if col==0 else 3,3))
+            parameter_caption(self.channel_panel,label,label).grid(row=0,column=col,sticky='w',padx=(0 if col==0 else 3,3))
         self.channel_panel.columnconfigure(1,weight=1)
         for row,channel in enumerate(self.active_channels,1):
             key = str(channel['index'])
@@ -825,7 +907,7 @@ class Application:
             input_cell.grid(row=row,column=0,sticky='w',padx=(0,3))
             ttk.Checkbutton(input_cell,variable=enabled).pack(side='left')
             ttk.Label(input_cell,text=self.input_labels()[channel['index']],wraplength=80).pack(side='left')
-            widgets = [ttk.Entry(self.channel_panel,textvariable=name,width=5),
+            widgets = [ttk.Entry(self.channel_panel,textvariable=name,width=1),
                        ttk.Combobox(self.channel_panel,textvariable=color,values=('Original',*NAMED_COLORS),state='readonly',width=8),
                        ttk.Spinbox(self.channel_panel,textvariable=regularization,from_=0,to=1e12,
                                    increment=.0001,format='%.12g',width=9),
@@ -852,10 +934,10 @@ class Application:
             widget.destroy()
         self.post_vars.clear()
         for col,label in enumerate(('Channel','Filter','Kernel')):
-            ttk.Label(self.post_panel,text=label).grid(row=0,column=col,sticky='w',padx=3)
+            parameter_caption(self.post_panel,label,label).grid(row=0,column=col,sticky='w',padx=3)
         self.post_panel.columnconfigure(1,weight=0)
         self.post_panel.columnconfigure(2,weight=1,uniform='')
-        intensity_header = ttk.Label(self.post_panel,text='Intensity')
+        intensity_header = parameter_caption(self.post_panel,'Intensity','Intensity')
         methods = []
         kernel_minimum = intensity_minimum = 0
         def refresh_columns():
