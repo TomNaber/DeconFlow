@@ -58,6 +58,18 @@ PAIRS = [
 DEFAULT_CHANNELS = []
 
 
+def browse_initial_directory(value, *, file_path=False):
+    """Return the existing directory associated with a picker path."""
+    if not value:
+        return None
+    try:
+        path = Path(value).expanduser()
+        folder = path.parent if file_path else path
+        return str(folder.absolute()) if folder.is_dir() else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def default_memory_gb():
     """Use half of installed physical RAM, in GiB."""
     if sys.platform == 'win32':
@@ -457,8 +469,10 @@ class Application:
         control.pack(side='left',fill='x',expand=True)
         self.field_widgets[name] = control
         if browse:
+            pick_path = filedialog.askdirectory if browse=='directory' else filedialog.askopenfilename
             def choose():
-                value = filedialog.askdirectory(parent=self.window) if browse=='directory' else filedialog.askopenfilename(parent=self.window)
+                initialdir = browse_initial_directory(var.get().strip(), file_path=browse!='directory')
+                value = pick_path(parent=self.window, initialdir=initialdir)
                 if value:
                     var.set(value)
             ttk.Button(holder,text='Browse…',command=choose).pack(side='left',padx=(4,0))
@@ -510,7 +524,8 @@ class Application:
         self.update_activity()
 
     def browse_export(self):
-        folder = filedialog.askdirectory(parent=self.window,title='Export generated PSFs to folder')
+        folder = filedialog.askdirectory(parent=self.window,title='Export generated PSFs to folder',
+                                         initialdir=browse_initial_directory(self.export_folder.get().strip()))
         if folder:
             self.export_folder.set(folder)
 
@@ -668,7 +683,9 @@ class Application:
         self.invalidate(psf=True)
 
     def browse_psfs(self):
+        current_path = self.imported_files[0] if self.imported_files else ''
         paths = filedialog.askopenfilenames(parent=self.window,title='Select PSF TIFF files',
+                                           initialdir=browse_initial_directory(current_path, file_path=True),
                                            filetypes=[('TIFF files','*.tif *.tiff *.TIF *.TIFF')])
         if paths:
             self.imported_files = list(paths)
