@@ -43,7 +43,7 @@ Python, Java, and ImageJ are included.
 If you use this app, please cite it as follows (use the version you used):
 
 <!-- citation:start -->
-> Naber, T. (2026). *DeconFlow: Batch Richardson–Lucy deconvolution with Aguet vectorial point-spread functions* (Version 1.2.0) [Computer software]. https://github.com/TomNaber/Imaris-Batch-Deconvolution/releases/tag/v1.2.0
+> Naber, T. (2026). *DeconFlow: Batch Richardson–Lucy deconvolution with Aguet vectorial point-spread functions* (Version 1.3.0) [Computer software]. https://github.com/TomNaber/Imaris-Batch-Deconvolution/releases/tag/v1.3.0
 <!-- citation:end -->
 
 ## Key references
