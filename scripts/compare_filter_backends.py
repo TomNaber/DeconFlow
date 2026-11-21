@@ -88,8 +88,13 @@ def main():
     generator.CHANNELS = sorted([dict(index=v['input_index'], name=v['name'],
                                     excitation_nm=float(v['excitation_nm']), emission_nm=float(v['emission_nm']))
                                  for v in definitions.values()], key=lambda c: c['index'])
-    reader = batch.open_ims(args.input)
-    spacing = batch.voxel_size(reader)
+    with batch.Dataset(args.input) as reader:
+        compare_input(reader, args, config)
+
+
+def compare_input(reader, args, config):
+    scene = reader.select(0)
+    spacing = scene.spacing
     if config.getboolean('PSF generation', 'xy_pixel_size_um_auto', fallback=True):
         generator.XY_PIXEL_SIZE_UM = spacing[2]
     if config.getboolean('PSF generation', 'z_step_um_auto', fallback=True):
@@ -109,7 +114,7 @@ def main():
                   legacy_boundary='half-sample symmetric reflection', channels=[])
     methods = ('Gaussian filter', 'Median filter', 'Bilateral filter')
     try:
-        for t in range(reader.dims.T):
+        for t in range(scene.shape[0]):
             for c, method in enumerate(methods):
                 pref = json.loads(config.get('Channel pseudocolor', str(c)))
                 settings = dict(filter=method, kernel=pref['post_kernel'],
@@ -140,7 +145,7 @@ def main():
                               deconvolution_seconds=deconv_seconds, filter_seconds=timings, interior_margins_zyx=margins,
                               floating=comparison(outputs['legacy'], outputs['simpleitk'], margins))
                 result['figure'] = figure(outputs['legacy'], outputs['simpleitk'], args.output / f'{prefix}_comparison.png', f'C{c+1} {method}')
-                stored = {key: batch.store_result(value.copy()) for key, value in outputs.items()}
+                stored = {key: np.clip(np.rint(value),0,65535).astype(np.uint16) for key, value in outputs.items()}
                 result['uint16'] = comparison(stored['legacy'], stored['simpleitk'], margins)
                 for backend, volume in stored.items():
                     tifffile.imwrite(args.output / f'{prefix}_{backend}_uint16.tif', volume, photometric='minisblack',

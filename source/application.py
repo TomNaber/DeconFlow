@@ -20,11 +20,10 @@ from tkinter import ttk, filedialog, messagebox
 from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
 
-import h5py
 
 from app_version import __version__, APP_NAME, AUTHOR, REPOSITORY_URL
 from source.channel_adjustment import ChannelAdjustment, NEUTRAL_CONTRAST, contrast_range
-from source.channel_metadata import read_channels, text
+from source.scene_io import discover, OUTPUT_FORMATS
 from source.edit_ims_channels import NAMED_COLORS
 from source.median_kernels import MEDIAN_KERNELS, kernel_label
 from source.platform_support import process_session_options, stop_process_tree
@@ -205,7 +204,10 @@ class Application:
         self.export_enabled = tk.BooleanVar(value=False)
         self.export_folder = tk.StringVar()
         self.import_display = tk.StringVar()
-        self.stack_status = tk.StringVar()
+        self.scan_generation = 0
+        self.scanning = False
+        self.scene_settings = {}
+        self.settings_scene = None
         if settings_path is None:
             if sys.platform == 'darwin':
                 base = Path.home()/'Library'/'Application Support'
@@ -292,8 +294,8 @@ class Application:
         self.setup = self.group('Setup')
         _,holder = self.field(self.setup,'Deconvolution',0,'INPUT_DIR','Z-stack input folder',ROOT/'examples',str,'directory')
         ttk.Button(holder,text='Refresh',command=self.refresh_input).pack(side='left',padx=(4,0))
-        ttk.Label(self.setup,textvariable=self.stack_status).grid(row=1,column=0,columnspan=2,sticky='w')
-        self.field(self.setup,'Deconvolution',2,'OUTPUT_DIR','Output folder','',str,'directory')
+        self.field(self.setup,'Deconvolution',1,'OUTPUT_DIR','Output folder','',str,'directory')
+        self.field(self.setup,'Deconvolution',2,'OUTPUT_FORMAT','Output format','Follow input')
         self.field(self.setup,'Deconvolution',3,'OVERWRITE','Overwrite existing output',False,bool)
         self.field(self.setup,'Deconvolution',4,'FIJI_MEMORY','ImageJ max memory (GB)',default_memory_gb(),float)
         self.psf_setup = self.group('PSF setup')
@@ -364,7 +366,7 @@ class Application:
         self.console.grid(row=3,column=0,sticky='ew',padx=side_padding,pady=(4,0))
         right = ttk.Notebook(workspace)
         right.grid(row=0,column=1,sticky='nsew',padx=(5,10),pady=10)
-        self.preview = Preview(right,self.preferences,self.refresh_input,self.error)
+        self.preview = Preview(right,self.preferences,self.select_scene,self.error)
         right.add(self.preview,text='Preview processing')
         self.psf_view = PSFView(right,self.preferences,lambda:self.request('view'),self.log,self.error)
         right.add(self.psf_view,text='View PSF')
@@ -528,6 +530,8 @@ class Application:
         parent.columnconfigure(1,weight=1)
         if kind is bool:
             control = ttk.Checkbutton(holder,variable=var)
+        elif name == 'OUTPUT_FORMAT':
+            control = ttk.Combobox(holder,textvariable=var,values=OUTPUT_FORMATS,state='readonly')
         elif name == 'FIJI_MEMORY':
             validate = self.window.register(lambda value: bool(re.fullmatch(r'\d*(?:\.\d*)?',value)))
             control = ttk.Spinbox(holder,textvariable=var,from_=1/1024,to=1048576,increment=.5,width=8,
@@ -619,7 +623,7 @@ class Application:
                 self.window.after_cancel(self.refresh_job)
             self.refresh_job = self.window.after(300,self.refresh_input)
         self.invalidate(psf=group=='PSF generation' or name=='INPUT_DIR',
-                        preview=name not in ('OUTPUT_DIR','OVERWRITE'))
+                        preview=name not in ('OUTPUT_DIR','OUTPUT_FORMAT','OVERWRITE'))
 
     def auto_spacing_changed(self):
         self.update_auto_spacing()
@@ -695,42 +699,46 @@ class Application:
             self.window.after_cancel(self.refresh_job)
             self.refresh_job = None
         folder = Path(self.fields['Deconvolution']['INPUT_DIR'][0].get()).expanduser()
+        self.scan_generation += 1
+        generation = self.scan_generation
+        self.scanning = True
+        self.update_activity()
+        def scan():
+            messages = []
+            try:
+                scenes = discover(folder,messages.append) if folder.is_dir() else []
+            except Exception as error:
+                messages.append(str(error))
+                scenes = []
+            self.events.put(('scan',generation,folder,scenes,messages))
+        threading.Thread(target=scan,daemon=True).start()
+
+    def select_scene(self):
+        scene = self.preview.selected_scene
+        if self.preview.data is not None and not self.preview.matches_loaded():
+            self.preview.clear()
+        key = scene.key if scene else None
+        if self.settings_scene != key:
+            if self.settings_scene:
+                self.scene_settings[self.settings_scene] = copy.deepcopy((
+                    self.signature,self.preferences,self.definitions,self.assignments))
+            if key in self.scene_settings:
+                signature,prefs,defs,assignments = copy.deepcopy(self.scene_settings[key])
+                self.signature, self.definitions, self.assignments = signature, defs, assignments
+                self.preferences.clear()
+                self.preferences.update(prefs)
+            elif self.settings_scene and scene and self.signature != [ch['name'] for ch in scene.channels]:
+                self.preferences.clear()
+                self.definitions = {}
+                self.assignments = {'internal':{}, 'external':{}}
+            self.settings_scene = key
         self.input_spacing = {}
-        # set_folder triggers activity callbacks before channel preferences are rebuilt.
-        self.active_channels = []
-        self.preview.set_folder(folder)
-        self.session.set_scope(self.preview.selected_path)
-        names = self.preview.files.cget('values')
-        self.stack_status.set(f"{len(names)} Z-stack{'s' if len(names)!=1 else ''} found" if names else 'No Z-stacks detected')
-        try:
-            if self.preview.selected_path:
-                self.active_channels = read_channels(self.preview.selected_path)
-                with h5py.File(self.preview.selected_path,'r') as handle:
-                    for channel in self.active_channels:
-                        section = handle.get(f"DataSetInfo/Channel {channel['index']}")
-                        try:
-                            color = tuple(float(v) for v in text(section.attrs.get('Color','1 1 1')).split())
-                            if len(color)!=3 or not all(math.isfinite(v) for v in color):
-                                raise ValueError()
-                            channel['color'] = tuple(max(0,min(1,v)) for v in color)
-                        except (AttributeError,ValueError):
-                            channel['color'] = (1,1,1)
-                    image = handle.get('DataSetInfo/Image')
-                    for name,axis,dimension in [('XY_PIXEL_SIZE_UM',0,'X'),('Z_STEP_UM',2,'Z')]:
-                        try:
-                            attrs = image.attrs
-                            size = int(text(attrs[dimension]))
-                            if size <= 0:
-                                raise ValueError('Invalid image dimensions.')
-                            spacing = (float(text(attrs[f'ExtMax{axis}'])) -
-                                       float(text(attrs[f'ExtMin{axis}']))) / size
-                            if not math.isfinite(spacing) or spacing <= 0:
-                                raise ValueError('Invalid image voxel spacing.')
-                            self.input_spacing[name] = spacing
-                        except (AttributeError,KeyError,TypeError,ValueError) as error:
-                            self.log(f'Cannot read input {dimension} spacing: {error}\n')
-        except (OSError,KeyError,ValueError) as error:
-            self.log(f'Cannot read input channels: {error}\n')
+        self.active_channels = list(scene.channels) if scene else []
+        self.session.set_scope(scene.key if scene else None)
+        if scene:
+            for name,value in zip(('Z_STEP_UM','XY_PIXEL_SIZE_UM'), (scene.spacing[0],scene.spacing[2])):
+                if value is not None and math.isfinite(value) and value > 0:
+                    self.input_spacing[name] = value
         signature = [c['name'] for c in self.active_channels]
         if signature and signature != self.signature:
             self.assignments = {'internal':{},'external':{}}
@@ -1178,13 +1186,18 @@ class Application:
         names = list(self.fields['Deconvolution']) if batch else ['FIJI_MEMORY','RLTV_NON_CIRCULANT']
         settings = {name:self.read_field('Deconvolution',name) for name in names}
         settings['FIJI_MEMORY'] = memory_argument(settings['FIJI_MEMORY'])
-        if not indices:
+        if not indices and not batch:
             raise ValueError('Select at least one input channel.')
         settings.update(POST_PROCESSING=True,CHANNEL_INDICES=list(indices),CHANNEL_ITERATIONS={},CHANNEL_REGULARIZATION={},
                         RLTV_REGULARIZATION=self.default_regularization,OUTPUT_CHANNEL_NAMES={},CHANNEL_POST_PROCESSING={})
         if batch:
             settings.pop('OUTPUT_CHANNEL_NAMES')
             settings['CHANNEL_EDITS'] = {}
+            defaults = []
+            for axis in ('Z_STEP_UM','XY_PIXEL_SIZE_UM','XY_PIXEL_SIZE_UM'):
+                value = self.fields['PSF generation'][axis][0].get()
+                defaults.append(float(value) if value and not self.auto_spacing_vars[axis].get() else None)
+            settings['SPACING_FALLBACK'] = defaults
         for index in indices:
             pref = self.preferences[str(index)]
             try:
@@ -1224,7 +1237,7 @@ class Application:
                 name = next(c['name'] for c in self.active_channels if c['index']==index)
             settings['CHANNEL_ITERATIONS'][str(index)] = iterations
             if batch:
-                edit = {'name':name}
+                edit = {'name':name} if pref['name'].strip() else {}
                 if pref['color']!='Original':
                     edit['color'] = pref['color']
                 settings['CHANNEL_EDITS'][str(index)] = edit
@@ -1252,12 +1265,14 @@ class Application:
             if self.refresh_job:
                 self.refresh_input()
             selected_path = self.preview.selected_path if single else None
-            if single and (selected_path is None or not selected_path.is_file()):
+            if self.scanning:
+                raise ValueError('Wait for input discovery to finish.')
+            if single and (selected_path is None or not selected_path.exists()):
                 raise ValueError('Select an existing image in the preview to run single-image processing.')
             indices = self.preview.selected_channels if kind=='preview' else (self.enabled_indices() if kind=='view' else self.processing_indices())
-            if not indices:
+            if not indices and kind != 'batch':
                 raise ValueError('Select at least one input channel.')
-            if not self.can_resolve(indices):
+            if indices and not self.can_resolve(indices):
                 if self.source.get()=='internal':
                     self.generator_settings()
                 raise ValueError((self.import_error if self.source.get()=='external' else None) or 'Select a PSF for each enabled channel.')
@@ -1268,11 +1283,14 @@ class Application:
                     return
                 self.fields['Deconvolution']['OUTPUT_DIR'][0].set(folder)
             settings = None if kind=='view' else self.deconvolution_settings(indices,batch=kind=='batch',require_psfs=False)
-            if single:
-                settings['INPUT_FILES'] = [str(selected_path.resolve())]
+            if kind=='batch':
+                scenes = [self.preview.selected_scene] if single else self.preview.scenes.values()
+                settings['INPUT_FILES'] = [dict(path=s.path,index=s.index) for s in scenes]
+                if not settings['INPUT_FILES']:
+                    raise ValueError('Select a folder containing readable images.')
             if kind=='batch' and generator and self.export_enabled.get() and not self.export_folder.get().strip():
                 raise ValueError('Select a folder for exporting generated PSFs.')
-            request = dict(kind=kind,automatic=automatic,started=perf_counter(),revision=self.revision,preview_revision=self.preview.revision,
+            request = dict(kind=kind,single=single,automatic=automatic,started=perf_counter(),revision=self.revision,preview_revision=self.preview.revision,
                            generator=generator,settings=settings,indices=indices,psf_revision=self.psf_revision)
             if kind=='batch':
                 settings['PSF_SOURCE'] = 'internal' if generator else 'external'
@@ -1394,9 +1412,10 @@ class Application:
     def launch(self,settings,stage,request):
         if stage == 'batch':
             handoff = self.preview.begin_batch()
-            session = self.preview.configure_fiji(settings['FIJI_MEMORY'])
-            settings = dict(settings, FIJI_SESSION=str(session.directory),
-                            PREVIEW_HANDOFF=handoff)
+            settings = dict(settings, PREVIEW_HANDOFF=handoff)
+            if any(settings['PSF_FILES']):
+                session = self.preview.configure_fiji(settings['FIJI_MEMORY'])
+                settings['FIJI_SESSION'] = str(session.directory)
         child = subprocess.Popen([sys.executable,'-u',str(ROOT/'main.py'),'--worker'],stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',
                                  errors='replace',cwd=ROOT,**process_session_options())
@@ -1404,7 +1423,7 @@ class Application:
         self.running = dict(settings=settings,stage=stage,request=request,waiters={request['kind']:request})
         self.cancelled = False
         self.log('\nGenerating PSFs…\n' if stage=='generate' else
-                 ('\nStarting single-image deconvolution…\n' if settings.get('INPUT_FILES') is not None else '\nStarting batch deconvolution…\n'))
+                 ('\nStarting single-image deconvolution…\n' if request.get('single') else '\nStarting batch deconvolution…\n'))
         def read():
             import codecs
             decoder = codecs.getincrementaldecoder('utf-8')('replace')
@@ -1558,7 +1577,8 @@ class Application:
         self.update_channel_adjustment()
         indices = self.enabled_indices()
         ready = self.can_resolve(indices)
-        processing_ready = self.can_resolve(self.processing_indices()) and not self.batch_locked
+        processing_ready = (bool(self.active_channels) and not self.scanning and not self.batch_locked
+                            and (not self.processing_indices() or self.can_resolve(self.processing_indices())))
         self.run_button.configure(state='normal' if processing_ready else 'disabled')
         self.run_single_button.configure(state='normal' if processing_ready and self.preview.selected_path else 'disabled')
         self.psf_view.view_button.configure(state='normal' if ready and not self.batch_locked and not self.view_loading else 'disabled')
@@ -1578,6 +1598,18 @@ class Application:
                 self.append_log(event)
                 continue
             kind = event[0]
+            if kind=='scan':
+                _, generation, folder, scenes, messages = event
+                if generation == self.scan_generation:
+                    self.scanning = False
+                    self.preview.set_folder(folder,scenes)
+                    for message in messages:
+                        self.log(f'Cannot read {message}\n')
+                    datasets = len({s.path for s in scenes})
+                    self.log(f"Found {datasets} dataset{'' if datasets == 1 else 's'} containing "
+                             f"{len(scenes)} image{'' if len(scenes) == 1 else 's'} in {folder}\n")
+                    self.select_scene()
+                continue
             if kind=='exported':
                 task,error = event[1:]
                 if task is not self.export_task:
@@ -1753,6 +1785,8 @@ class Application:
         for group,entries in self.defaults.items():
             for name,value in entries.items():
                 self.fields[group][name][0].set(value)
+        self.scene_settings.clear()
+        self.settings_scene = None
         self.preferences.clear()
         self.default_regularization = .002
         self.definitions = {str(i):copy.deepcopy(c) for i,c in enumerate(DEFAULT_CHANNELS)}

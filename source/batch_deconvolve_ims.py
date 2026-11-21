@@ -2,7 +2,6 @@
 
 import gc
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -12,20 +11,21 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
 from time import perf_counter
 
-import bioio_bioformats
 import h5py
 import numpy as np
 import tifffile
-from bioio import BioImage
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from source.scene_io import Dataset, discover
+from source.scene_export import destination, encode, output_dtype, publish, validate_output, write_scene
 
 from imagej_runtime import launch_command, java_environment, runtime_info
-from bioformats_runtime import configure_bioformats
 from platform_support import process_session_options, stop_process_tree
-from ims_writer import write_imaris
 from edit_ims_channels import parse_color
 from psf_channels import read_psf_channels, load_psf_volume
 from console_progress import ProgressLine
-from channel_metadata import read_channels
 from batch_report import BatchReport, timestamp, sha256
 from median_kernels import kernel_zyx
 
@@ -38,6 +38,8 @@ _preview = None
 INPUT_FILES = None  # Explicit input paths, or None to process the entire input folder.
 PSF_DIR = ROOT / "psfs"
 OUTPUT_DIR = ROOT / "dcv"
+OUTPUT_FORMAT = "Follow input"
+SPACING_FALLBACK = (None,None,None)
 TEMP_DIR = Path(gettempdir())
 
 ITERATIONS = 20
@@ -56,25 +58,6 @@ PSF_SOURCE = "external"
 PSF_GENERATION_PARAMETERS = None
 # None preserves automatic all-channel processing for command-line callers.
 CHANNEL_INDICES = None
-
-
-@contextmanager
-def quiet_bioformats():
-    sys.stdout.flush()
-    sys.stderr.flush()
-    saved = os.dup(1), os.dup(2)
-    try:
-        with open(os.devnull, "w") as sink:
-            os.dup2(sink.fileno(), 1)
-            os.dup2(sink.fileno(), 2)
-            yield
-    finally:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.dup2(saved[0], 1)
-        os.dup2(saved[1], 2)
-        os.close(saved[0])
-        os.close(saved[1])
 
 
 def load_psfs():
@@ -115,28 +98,8 @@ def load_psfs():
     return channels, psfs
 
 
-def open_ims(path):
-    configure_bioformats()
-    with quiet_bioformats():
-        return BioImage(str(path), reader=bioio_bioformats.Reader)
-
-
-def voxel_size(reader):
-    with quiet_bioformats():
-        size = reader.physical_pixel_sizes
-    return float(size.Z), float(size.Y), float(size.X)
-
-
 def read_volume(reader, time_index, channel_index, *, preserve=False):
-    with quiet_bioformats():
-        raw = np.asarray(
-            reader.get_image_dask_data(
-                "ZYX", T=time_index, C=channel_index
-            ).compute()
-        )
-    if raw.dtype == np.int8:
-        print("      WARNING: reinterpreting signed int8 bytes as uint8")
-        raw = raw.view(np.uint8)
+    raw = reader.volume(time_index, channel_index)
     if preserve:
         return np.ascontiguousarray(raw)
     image = np.asarray(raw, dtype=np.float32)
@@ -320,16 +283,10 @@ def post_process(result, settings, spacing_zyx=None, *, backend='simpleitk'):
     return median_filter(result, size=kernel_zyx(settings.get('kernel', 3)), mode='reflect')
 
 
-def store_result(result):
-    np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-    np.maximum(result, 0.0, out=result)
-    return np.clip(np.rint(result), 0, 65535).astype(np.uint16)
-
-
 def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=None,
                *, file_index=1, n_files=1):
-    spacing_zyx = voxel_size(reader)
-    channel_maxima = [0] * n_channels
+    spacing_zyx = tuple(v or fallback for v,fallback in zip(reader.scene.spacing, SPACING_FALLBACK))
+    channel_maxima = [-np.inf] * n_channels
     for time_index in range(n_timepoints):
         for channel_index in range(n_channels):
             name = str(channels[channel_index]["name"])
@@ -341,21 +298,14 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=
             channel_started = perf_counter()
             timings = {}
             post = CHANNEL_POST_PROCESSING.get(str(channel_index), {})
-            filter_enabled = POST_PROCESSING and post.get('filter', 'None') != 'None'
+            filter_enabled = (CHANNEL_INDICES is None or channel_index in CHANNEL_INDICES) and POST_PROCESSING and post.get('filter', 'None') != 'None'
             preserve = psfs[channel_index] is None and not filter_enabled
             with ProgressLine(label, 'Reading input', delay=1, timings=timings,
                               total_started=channel_started).running():
                 image = read_volume(reader, time_index, channel_index, preserve=preserve)
             if preserve:
                 print(f"{label}: keeping original channel", flush=True)
-                # IMS output is uint16. Widen uint8 losslessly, but never silently
-                # clip or round an excluded channel of an unsupported type.
-                if not np.can_cast(image.dtype, np.uint16, casting="safe"):
-                    raise ValueError(
-                        f"Cannot preserve {label} with dtype {image.dtype} in uint16 output")
                 result = image
-                stored = image.astype(np.uint16, copy=False)
-                saturated = 0
             else:
                 result = image if psfs[channel_index] is None else run_fiji(image, psfs[channel_index], label,
                                   timings=timings, total_started=channel_started,
@@ -367,28 +317,20 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=
                     with ProgressLine(label, f"Post-processing ({post['filter']})",
                                       timings=timings, total_started=channel_started).running():
                         result = post_process(result, post, spacing_zyx=spacing_zyx)
-                with ProgressLine(label, 'Converting output', delay=1, timings=timings,
-                                  total_started=channel_started).running():
-                    stored = store_result(result)
-                    saturated = int(np.count_nonzero(result > 65535))
-            if _preview is not None and time_index == 0:
-                if preserve:
-                    _preview.attempt(_preview.capture_raw, channel_index, result)
-                _preview.attempt(_preview.capture_result, channel_index, stored)
+                result = np.asarray(result, dtype=np.float32)
+                np.nan_to_num(result, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+            if preserve and _preview is not None and time_index == 0:
+                _preview.attempt(_preview.capture_raw, channel_index, result)
             with ProgressLine(label, 'Writing channel output', delay=1, timings=timings,
                               total_started=channel_started).running():
-                stored_max = int(stored.max())
-                channel_maxima[channel_index] = max(
-                    channel_maxima[channel_index], stored_max
-                )
-                output[time_index, channel_index] = stored
-                output.flush()
-            if saturated:
-                print(
-                    f"      WARNING: {saturated:,} voxels "
-                    f"({100 * saturated / result.size:.6f}%) clipped at 65535"
-                )
-            del image, result, stored
+                if np.issubdtype(result.dtype, np.floating) and not np.isfinite(result).all():
+                    finite = result[np.isfinite(result)]
+                    maximum = float(finite.max()) if finite.size else 0.0
+                else:
+                    maximum = float(result.max())
+                channel_maxima[channel_index] = max(channel_maxima[channel_index], maximum)
+                output[time_index, channel_index] = result
+            del image, result
             gc.collect()
             elapsed = perf_counter() - channel_started
             timings['Other / cleanup'] = max(0.0, elapsed - sum(timings.values()))
@@ -397,7 +339,7 @@ def deconvolve(reader, output, channels, psfs, n_timepoints, n_channels, record=
                 record.setdefault('channel_timings', []).append(dict(
                     time_index=time_index, channel_index=channel_index,
                     total_seconds=elapsed, stages_seconds=timings))
-    return [(0.0, float(maximum or 1)) for maximum in channel_maxima]
+    return channel_maxima
 
 
 def preserve_original_channel_metadata(input_path, output_path, indices):
@@ -414,7 +356,7 @@ def preserve_original_channel_metadata(input_path, output_path, indices):
                 source.copy(metadata, output["DataSetInfo"], name=name)
 
 
-def process_file(input_path, channels, psfs, record=None, *, file_index=1, n_files=1):
+def process_file(input_path, channels, psfs, record=None, *, file_index=1, n_files=1, scene_index=0):
     record = {} if record is None else record
     counts = {int(key): value for key, value in CHANNEL_ITERATIONS.items()}
     iteration_tag = (str(next(iter(counts.values()))) if counts and len(set(counts.values())) == 1
@@ -426,139 +368,138 @@ def process_file(input_path, channels, psfs, record=None, *, file_index=1, n_fil
                           else "_".join(f"C{key+1}-{value:.10g}" for key,value in sorted(regularizations.items()))
                           if regularizations else format(RLTV_REGULARIZATION, '.10g'))
     tag = f"iter{iteration_tag}_reg{regularization_tag}"
-    stem = f"{input_path.stem}_deconvolved_{tag}"
-    output_path = OUTPUT_DIR / f"{stem}.ims"
-    partial_path = OUTPUT_DIR / f".{stem}.partial.ims"
-    array_path = TEMP_DIR / f".{stem}.uint16.tczyx.dat"
-
-    record['save_location'] = str(output_path.resolve())
-    try:
-        originals = read_channels(input_path)
-        selected_indices = list(range(len(originals))) if CHANNEL_INDICES is None else CHANNEL_INDICES
-        record['channels'] = []
-        for original in originals:
-            index = original['index']
-            selected_channel = index in selected_indices
-            position = selected_indices.index(index) if selected_channel else None
-            assigned = channels[position] if position is not None and position < len(channels) else {}
-            edit = CHANNEL_EDITS.get(str(index), CHANNEL_EDITS.get(index, {})) if selected_channel else {}
-            record['channels'].append(dict(
-                index=index, input_name=original['name'],
-                requested_output_name=edit.get('name', assigned.get('name', original['name'])),
-                action=('deconvolve' if psfs[position] is not None else 'filter') if selected_channel else 'preserve',
-                psf_assignment_position=position,
-                iterations=CHANNEL_ITERATIONS.get(str(index), ITERATIONS) if selected_channel and psfs[position] is not None else None,
-                regularization=CHANNEL_REGULARIZATION.get(str(index), RLTV_REGULARIZATION) if selected_channel and psfs[position] is not None else None,
-                requested_color=edit.get('color', 'original')))
-        record['channel_count'] = len(originals)
-    except Exception as error:
-        record['metadata_error'] = str(error)
-
-    if output_path.exists() and not OVERWRITE:
-        record.update(status='skipped', reason='Output exists; overwrite disabled. Requested settings were not applied.')
-        try:
-            record['existing_output_channels'] = read_channels(output_path)
-        except Exception as error:
-            record['existing_output_metadata_error'] = str(error)
-        print(f"Skipping existing: {output_path.name}")
-        return
-    partial_path.unlink(missing_ok=True)
-    array_path.unlink(missing_ok=True)
-
-    reader = None
-    output = None
-    if _preview is not None:
-        _preview.attempt(_preview.start, input_path)
-    try:
-        if CHANNEL_INDICES == []:
-            shutil.copy2(input_path, partial_path)
-            partial_path.replace(output_path)
-            record.update(status="completed", action="copied unchanged")
-            print(f"Copied unchanged (no channels selected): {output_path.name}")
+    with Dataset(input_path) as reader:
+        scene = reader.select(scene_index)
+        family, name = destination(scene, OUTPUT_FORMAT, tag)
+        output_path = OUTPUT_DIR / name
+        record.update(
+            save_location=str(output_path.resolve()),
+            output_format=family,
+            scene_index=scene.index,
+            scene_name=scene.name,
+            shape_tczyx=scene.shape,
+            source_dtype=scene.dtype,
+            voxel_size_zyx_um=scene.spacing,
+        )
+        if output_path.exists() and not OVERWRITE:
+            record.update(status="skipped", reason="Output exists and overwrite is disabled.")
             return
-        with ProgressLine(input_path.name, 'Opening image', delay=1,
-                          timings=record.setdefault('file_stages_seconds', {})).running():
-            reader = open_ims(input_path)
-        shape = tuple(int(getattr(reader.dims, axis)) for axis in "TCZYX")
-        n_t, n_c, _, _, _ = shape
-        selected = list(range(n_c)) if CHANNEL_INDICES is None else CHANNEL_INDICES
-        if any(index >= n_c for index in selected):
-            raise ValueError(f"Selected channel is absent from image with {n_c} channels")
-        if len(selected) > len(psfs):
-            raise ValueError(f"Image needs {len(selected)} PSFs but only {len(psfs)} are available")
-        original_channels = read_channels(input_path)
-        if [channel["index"] for channel in original_channels] != list(range(n_c)):
-            raise ValueError("Image channel numbering must be consecutive")
-        file_channels = [dict(channel) for channel in original_channels]
-        file_psfs = [None] * n_c
-        for position, index in enumerate(selected):
-            file_channels[index] = channels[position] or file_channels[index]
-            file_psfs[index] = psfs[position]
-        output_names = [channel["name"] for channel in file_channels]
-        output_colors = [None] * n_c
-        for index in selected:
-            edit = CHANNEL_EDITS.get(str(index), CHANNEL_EDITS.get(index, {}))
-            if "name" in edit:
-                output_names[index] = edit["name"]
-            if "color" in edit:
-                output_colors[index] = parse_color(edit["color"])
-        dz, dy, dx = voxel_size(reader)
-        record.update(shape_tczyx=shape, voxel_size_zyx_um=(dz, dy, dx),
-                      source_dtype=str(reader.dtype), output_channel_names=output_names)
-        print(f"\nProcessing {input_path.name}")
-        print(f"  Shape TCZYX: {shape}")
-        print(f"  Voxel size ZYX: {(dz, dy, dx)} µm")
-        print(f"  Source dtype: {reader.dtype}")
-        print(f"  Source channels: {reader.channel_names}")
-
-        output = np.memmap(array_path, mode="w+", dtype=np.uint16, shape=shape)
-        channel_ranges = deconvolve(reader, output, file_channels, file_psfs, n_t, n_c,
-                                    record=record, file_index=file_index, n_files=n_files)
-        output.flush()
-        reader = None
-        gc.collect()
-
-        with ProgressLine(output_path.name, 'Writing native IMS',
-                          timings=record.setdefault('file_stages_seconds', {})).running():
-            write_imaris(
-                output,
-                partial_path,
-                channel_names=output_names,
-                channel_colors=output_colors,
-                channel_ranges=channel_ranges,
-                excitation_wavelengths_nm=[
-                    channel.get("excitation_nm") for channel in file_channels
-                ],
-                emission_wavelengths_nm=[
-                    channel.get("emission_nm") for channel in file_channels
-                ],
-                source_ims=input_path,
+        selected = list(range(scene.shape[1])) if CHANNEL_INDICES is None else CHANNEL_INDICES
+        if any(i < 0 for i in selected) or len(selected) > len(psfs):
+            raise ValueError(f"Channel or PSF selection does not match {scene.label}")
+        file_psfs = [None] * scene.shape[1]
+        originals = [dict(ch) for ch in scene.channels]
+        for position, i in enumerate(selected):
+            if i >= scene.shape[1]:
+                if n_files == 1:
+                    raise ValueError(f"Channel {i + 1} is absent from {scene.label}")
+                record.setdefault("absent_selected_channels", []).append(i)
+                continue
+            file_psfs[i] = psfs[position]
+            edit = CHANNEL_EDITS.get(str(i), CHANNEL_EDITS.get(i, {}))
+            if edit.get("name"):
+                scene.channels[i]["name"] = edit["name"]
+            if edit.get("color") and edit["color"] != "original":
+                scene.channels[i]["color"] = parse_color(edit["color"])
+            for attr in ("excitation_nm", "emission_nm"):
+                if channels[position].get(attr) is not None:
+                    scene.channels[i][attr] = channels[position][attr]
+        record["channels"] = []
+        for i, ch in enumerate(scene.channels):
+            deconvolving = file_psfs[i] is not None
+            post_filter = CHANNEL_POST_PROCESSING.get(str(i), {}).get("filter", "None")
+            filtering = i in selected and POST_PROCESSING and post_filter != "None"
+            edit = CHANNEL_EDITS.get(str(i), CHANNEL_EDITS.get(i, {}))
+            record["channels"].append(
+                dict(
+                    index=i,
+                    input_name=originals[i]["name"],
+                    requested_output_name=ch["name"],
+                    requested_color=edit.get("color", "original"),
+                    action="deconvolve" if deconvolving else "filter" if filtering else "preserve",
+                    psf_assignment_position=selected.index(i) if i in selected else None,
+                    iterations=CHANNEL_ITERATIONS.get(str(i), ITERATIONS) if deconvolving else None,
+                    regularization=CHANNEL_REGULARIZATION.get(str(i), RLTV_REGULARIZATION)
+                    if deconvolving
+                    else None,
+                )
             )
-            excluded = [index for index in range(n_c) if index not in selected]
-            preserve_original_channel_metadata(input_path, partial_path, excluded)
-            output_path.unlink(missing_ok=True)
-            partial_path.replace(output_path)
-        record.update(status="completed")
+        record.update(
+            channel_count=len(scene.channels), output_channel_names=[ch["name"] for ch in scene.channels]
+        )
+        dtype = output_dtype(scene.dtype)
+        # A float64 staging buffer exactly represents untreated uint32 pixels and
+        # processed float32 values in the same scene.
+        work_dtype = (
+            np.float64 if np.dtype(scene.dtype).itemsize >= 4 and scene.dtype != "float32" else np.float32
+        )
         if _preview is not None:
-            _preview.attempt(_preview.finish)
-        print(f"Finished: {output_path.name}")
+            _preview.attempt(_preview.start, input_path, scene.index)
+        try:
+            with (
+                TemporaryDirectory(dir=TEMP_DIR) as work,
+                TemporaryDirectory(dir=OUTPUT_DIR, prefix=".deconflow-") as stage,
+            ):
+                staged_path = Path(stage) / name
+                with mapped_volume(Path(work) / "processed", work_dtype, scene.shape) as staged:
+                    maxima = deconvolve(
+                        reader,
+                        staged,
+                        scene.channels,
+                        file_psfs,
+                        *scene.shape[:2],
+                        record=record,
+                        file_index=file_index,
+                        n_files=n_files,
+                    )
+                    with mapped_volume(Path(work) / "encoded", dtype, scene.shape) as output:
+                        factor = encode(staged, output, max(maxima))
+                        record.update(
+                            output_dtype=dtype.name, pre_scale_maximum=max(maxima), scale_factor=factor
+                        )
+                        print(
+                            f"{scene.label}: {dtype.name}, maximum {max(maxima):g}, scale factor {factor:.12g}"
+                        )
+                        ranges = [(0.0, max(1.0, m * factor)) for m in maxima]
+                        if _preview is not None:
+                            for i in range(scene.shape[1]):
+                                _preview.attempt(_preview.capture_result, i, output[0, i])
+                        write_scene(
+                            output,
+                            staged_path,
+                            family,
+                            scene,
+                            ranges,
+                            record,
+                            follow=OUTPUT_FORMAT == "Follow input",
+                        )
+                        if family == scene.family == "Imaris":
+                            excluded = [i for i in range(scene.shape[1]) if i not in selected and factor == 1]
+                            preserve_original_channel_metadata(input_path, staged_path, excluded)
+                        validate_output(staged_path, output, scene)
+                publish(staged_path, output_path, OVERWRITE)
+            record["status"] = "completed"
+            if _preview is not None:
+                _preview.attempt(_preview.finish)
+        finally:
+            if _preview is not None:
+                _preview.discard()
+
+
+@contextmanager
+def mapped_volume(path, dtype, shape):
+    array = np.memmap(path, mode="w+", dtype=dtype, shape=shape)
+    try:
+        yield array
     finally:
-        reader = None
-        if output is not None:
-            output.flush()
-            del output
-        gc.collect()
-        array_path.unlink(missing_ok=True)
-        partial_path.unlink(missing_ok=True)
-        if _preview is not None:
-            _preview.discard()
+        array._mmap.close()
 
 
 def main():
     global _preview
     batch_started = perf_counter()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    names = ('INPUT_DIR', 'INPUT_FILES', 'OUTPUT_DIR', 'TEMP_DIR', 'PSF_DIR', 'PSF_FILES',
+    names = ('INPUT_DIR', 'INPUT_FILES', 'OUTPUT_FORMAT', 'OUTPUT_DIR', 'TEMP_DIR', 'PSF_DIR', 'PSF_FILES',
              'PSF_SOURCE', 'ITERATIONS', 'CHANNEL_ITERATIONS', 'CHANNEL_REGULARIZATION',
              'RLTV_REGULARIZATION', 'RLTV_NON_CIRCULANT',
              'FIJI_MEMORY', 'OVERWRITE', 'CHANNEL_EDITS', 'CHANNEL_INDICES',
@@ -595,11 +536,23 @@ def main():
 
 
 def run_batch(report):
-    input_files = (sorted(INPUT_DIR.glob("*.ims")) if INPUT_FILES is None else
-                   [Path(path).expanduser() for path in INPUT_FILES])
-    input_files = [path for path in input_files if not path.name.startswith(".")]
-    report.data['files'] = [dict(filename=path.name, input_path=str(path.resolve()),
-                                 status='pending') for path in input_files]
+    if INPUT_FILES is None:
+        scenes = [(Path(s.path),s.index) for s in discover(INPUT_DIR)]
+    else:
+        scenes = []
+        for entry in INPUT_FILES:
+            if isinstance(entry, dict):
+                scenes.append((Path(entry["path"]), int(entry["index"])))
+            else:
+                path = Path(entry).expanduser()
+                try:
+                    with Dataset(path) as ds:
+                        scenes.extend((path,i) for i in ds.indices)
+                except Exception as error:
+                    print(f"Cannot read {path.name}: {error}")
+                    scenes.append((path,0))  # Record the failure and continue with other inputs.
+    report.data['files'] = [dict(filename=p.name, input_path=str(p.resolve()), scene_index=i,
+                                 status='pending') for p,i in scenes]
     report.save()
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     for path in (() if CHANNEL_INDICES == [] else (
@@ -612,20 +565,20 @@ def run_batch(report):
         str(path.relative_to(ROOT)): sha256(path) for path in (
             Path(__file__), ROOT / 'app_version.py', SOURCE_DIR / 'generate_vectorial_psfs.py',
             SOURCE_DIR / 'fiji_session_worker.py', SOURCE_DIR / 'imagej_runtime.py',
-            SOURCE_DIR / 'imagej/HeadlessImageJ.java', SOURCE_DIR / 'ims_writer.py',
+            SOURCE_DIR / 'imagej/HeadlessImageJ.java', SOURCE_DIR / 'ims_writer.py', SOURCE_DIR / 'scene_io.py', SOURCE_DIR / 'scene_export.py',
             SOURCE_DIR / 'lib/totalvariationterm.cl')}
     if CHANNEL_INDICES != [] and (not PSF_FILES or any(PSF_FILES)):
         report.data['imagej_runtime'] = runtime_info()
     channels, psfs = load_psfs()
     report.record_psfs(channels, psfs)
-    if not input_files:
-        raise FileNotFoundError(f"No .ims files found in {INPUT_DIR}")
+    if not scenes:
+        raise FileNotFoundError(f"No readable images found in {INPUT_DIR}")
 
     print(f"Loaded {len(psfs)} channel PSFs")
-    print(f"Found {len(input_files)} IMS files")
+    print(f"Found {len({path for path,_ in scenes})} datasets containing {len(scenes)} images")
     print(f"Output: {OUTPUT_DIR}")
     failed = []
-    for file_index, (input_path, record) in enumerate(zip(input_files, report.data['files']), start=1):
+    for file_index, ((input_path, scene_index), record) in enumerate(zip(scenes, report.data['files']), start=1):
         file_started = perf_counter()
         record.update(status='running', started_utc=timestamp())
         report.save()
@@ -633,7 +586,7 @@ def run_batch(report):
             stat = input_path.stat()
             record.update(input_size_bytes=stat.st_size, input_mtime_ns=stat.st_mtime_ns)
             process_file(input_path, channels, psfs, record,
-                         file_index=file_index, n_files=len(input_files))
+                         file_index=file_index, n_files=len(scenes), scene_index=scene_index)
         except Exception as error:
             record.update(status='failed', error=str(error), traceback=traceback.format_exc())
             print(f"FAILED: {input_path.name}", file=sys.stderr)

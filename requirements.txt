@@ -13,3 +13,5 @@ bioio-bioformats==2.0.0
 ./vendor/napari_vipp_imaris-0.1.0a2-py3-none-macosx_12_0_arm64.whl ; sys_platform == "darwin" and platform_machine == "arm64"
 ./vendor/napari_vipp_imaris-0.1.0a2-py3-none-macosx_12_0_x86_64.whl ; sys_platform == "darwin" and platform_machine == "x86_64"
 ./vendor/napari_vipp_imaris-0.1.0a2-py3-none-win_amd64.whl ; sys_platform == "win32" and (platform_machine == "AMD64" or platform_machine == "x86_64")
+bioio-ome-zarr==3.9.1
+imagecodecs==2026.6.26

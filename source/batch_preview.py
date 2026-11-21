@@ -35,7 +35,7 @@ class BatchPreview:
         ready = self.directory / "ready.json"
         rejected = self.directory / "rejected"
         rejected.unlink(missing_ok=True)
-        publish(ready, dict(kind=kind, path=str(self.path), settings=self.settings))
+        publish(ready, dict(kind=kind, path=str(self.path), scene_index=self.index, settings=self.settings))
         # The UI acknowledges only after adopting the matching pair. This bounds
         # staging to one sample and also orders completion before batch unlock.
         while ready.exists():
@@ -44,9 +44,10 @@ class BatchPreview:
             sleep(.05)
         return not rejected.exists()
 
-    def start(self, path):
+    def start(self, path, index):
+        self.index = index
         self.path = Path(path).resolve()
-        publish(self.directory / "activity.json", {"path": str(self.path)})
+        publish(self.directory / "activity.json", {"path": str(self.path), "label": f"{self.path.name} [{index+1}]"})
         self.discard()
         (self.directory / "sample").mkdir()
         if self.first:

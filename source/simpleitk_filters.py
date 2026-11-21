@@ -42,7 +42,10 @@ two methods; the median's selected neighbourhood may include Z.
     if spacing_zyx is None:
         dy = dx = float(settings['xy_pixel_size_um'])
     else:
-        _, dy, dx = map(float, spacing_zyx)
+        fallback = settings.get('xy_pixel_size_um')
+        dy, dx = (v or fallback for v in spacing_zyx[1:])
+        if dy is None or dx is None:
+            raise ValueError("Enter the lateral pixel size for this uncalibrated image.")
     sigma = float(settings['sigma_um'])
     if not all(np.isfinite(v) and v > 0 for v in (dy, dx, sigma)):
         raise ValueError('Filter width and XY pixel size must be finite and positive.')

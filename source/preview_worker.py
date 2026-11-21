@@ -8,10 +8,9 @@ import traceback
 from time import perf_counter
 import tifffile
 
-import h5py
 import numpy as np
 
-from source.channel_metadata import read_channels, text
+from source.scene_io import Dataset
 from source.psf_channels import load_psf_volume
 from source.console_progress import ProgressLine
 
@@ -27,50 +26,20 @@ def display_range(volume):
     return low, high
 
 
-def load_volume(path):
-    channels = read_channels(path)
-    if not channels:
-        raise ValueError("No image channels found.")
-    volumes = []
-    projections = []
-    with h5py.File(path, "r") as handle:
-        image = handle["DataSetInfo/Image"].attrs
-        shape = tuple(int(text(image[axis])) for axis in "ZYX")
-        if any(size <= 0 for size in shape):
-            raise ValueError("Invalid image dimensions.")
-        spacing = tuple(
-            (float(text(image[f"ExtMax{axis}"])) - float(text(image[f"ExtMin{axis}"]))) / size
-            for axis, size in zip((2, 1, 0), shape)
-        )
-        if not all(np.isfinite(value) and value > 0 for value in spacing):
-            raise ValueError("Invalid image voxel spacing.")
-        for channel in channels:
-            index = channel["index"]
-            dataset = handle[f"DataSet/ResolutionLevel 0/TimePoint 0/Channel {index}/Data"]
-            if dataset.ndim != 3 or any(actual < required for actual, required in zip(dataset.shape, shape)):
-                raise ValueError(f"Invalid image dimensions for C{index + 1}.")
-            volume = dataset[tuple(slice(0, size) for size in shape)]
-            if volume.dtype == np.int8:
-                volume = volume.view(np.uint8)
-            if np.issubdtype(volume.dtype, np.floating):
-                np.nan_to_num(volume, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-            attrs = handle[f"DataSetInfo/Channel {index}"].attrs
-            try:
-                color = tuple(float(value) for value in text(attrs.get("Color", "1 1 1")).split())
-                if len(color) != 3 or not all(np.isfinite(color)):
-                    raise ValueError()
-                color = tuple(np.clip(color, 0, 1))
-            except ValueError:
-                color = (1.0, 1.0, 1.0)
+def load_volume(path, index=0):
+    volumes, projections = [], []
+    with Dataset(path) as reader:
+        scene = reader.select(index)
+        for ch in scene.channels:
+            volume = reader.volume(0,ch["index"])
+            if np.issubdtype(volume.dtype,np.floating):
+                volume = np.nan_to_num(volume,nan=0.,posinf=0.,neginf=0.)
             volumes.append(volume)
-            projections.append({
-                **channel,
-                "xy": volume.max(axis=0),
-                "yz": volume.max(axis=2),
-                "range": display_range(volume),
-                "color": color,
-            })
-    return volumes, {"path": str(path), "shape": shape, "spacing": spacing, "channels": projections}
+            projections.append({**ch, "xy":volume.max(axis=0), "yz":volume.max(axis=2),
+                                "range":display_range(volume)})
+    return volumes, dict(path=scene.path,scene_index=index,label=scene.label,shape=scene.shape[2:],
+                         spacing=tuple(v or 1.0 for v in scene.spacing), channels=projections,
+                         source_spacing=scene.spacing)
 
 
 class Log:
@@ -273,10 +242,10 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
                               timings=timings, total_started=channel_started).running():
                 result = cache.deconvolved[index][1].copy()
                 if settings.get('POST_PROCESSING', False):
-                    result = batch.post_process(result, post, spacing_zyx=cache.original["spacing"])
+                    result = batch.post_process(result, post, spacing_zyx=cache.original["source_spacing"])
             with ProgressLine(label, 'Converting output and building preview projections',
                               timings=timings, total_started=channel_started).running():
-                stored = batch.store_result(result)
+                stored = result
                 projection = {**channel, "xy": stored.max(axis=0), "yz": stored.max(axis=2),
                               "range": display_range(stored), "processing": processing}
                 cache.results[index] = projection
@@ -290,11 +259,12 @@ def deconvolve_volume(cache, settings, directory, stale, initialized):
 def import_batch_sample(directory, manifest, cache_directory, previous):
     """Build a replacement cache off to the side; never damage the displayed one."""
     path = manifest["path"]
-    if previous is not None and previous.original["path"] == path:
+    index = manifest["scene_index"]
+    if previous is not None and (previous.original["path"],previous.original["scene_index"]) == (path,index):
         volumes = [v for v, _ in previous.volumes.values()]
         original = previous.original
     else:
-        volumes, original = load_volume(path)
+        volumes, original = load_volume(path,index)
     cache = PreviewCache(cache_directory, volumes, original)
     if manifest["kind"] == "original":
         return cache, None
@@ -348,7 +318,7 @@ def run(connection, path, cache_directory):
         started = perf_counter()
         cache = None
         if path is not None:
-            volumes, projection = load_volume(path)
+            volumes, projection = load_volume(*path)
             cache = PreviewCache(cache_directory, volumes, projection)
             connection.send(("loaded", projection))
         while True:

@@ -77,7 +77,7 @@ class BatchReport:
                 self.path = Path(output_dir).resolve() / f'{name} ({suffix}).xml'
         self.log = StringIO()
         packages = {}
-        for package in ('numpy', 'tifffile', 'h5py', 'bioio', 'bioio-bioformats',
+        for package in ('numpy', 'tifffile', 'h5py', 'bioio', 'bioio-bioformats', 'bioio-ome-zarr', 'imagecodecs', 'zarr',
                         'psfmodels', 'napari-vipp-imaris'):
             try:
                 packages[package] = version(package)
@@ -89,9 +89,9 @@ class BatchReport:
                                           application_version=runpy.run_path(str(Path(__file__).resolve().parent.parent / 'app_version.py'))['__version__']),
                          channel_index_convention='zero-based',
                          algorithm='ImageJ CLIJx DeconvolveRichardsonLucyFFT (RL-TV)',
-                         input_conversion='float32; nonfinite and negative values set to zero; signed int8 reinterpreted as uint8',
+                         input_conversion='Processed channels use float32 with nonfinite and negative values set to zero. Native IMS int8 storage is interpreted as unsigned bytes.',
                          psf_conversion='float32; nonfinite and negative values set to zero; normalized to unit sum',
-                         output_conversion='uint16; nonfinite and negative values set to zero; round to nearest; clip at 65535',
+                         output_conversion='Integer outputs are rounded after whole-scene overflow-only scaling. Each scene records its output dtype and scale factor.',
                          console_log='', psfs=[], files=[])
         self.save()
 

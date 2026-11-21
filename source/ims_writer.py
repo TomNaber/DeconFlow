@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import product
 from pathlib import Path
 
@@ -55,6 +55,7 @@ def _parameter_sections(
     channel_names,
     excitation_wavelengths_nm,
     emission_wavelengths_nm,
+    dtype,
 ):
     sections = {
         name: dict(values)
@@ -85,7 +86,7 @@ def _parameter_sections(
         {
             "ApplicationName": "Fiji CLIJ2-FFT RL-TV batch",
             "ApplicationVersion": "1.4",
-            "DataType": "uint16",
+            "DataType": dtype,
             "AxisOrder": "TCZYX",
         }
     )
@@ -108,7 +109,7 @@ def _extents(source):
 
 def _times(source, count):
     time_info = source.get("TimeInfo", {})
-    fallback = time_info.get("TimePoint1", source["Image"]["RecordingDate"])
+    fallback = time_info.get("TimePoint1") or source["Image"].get("RecordingDate", "1970-01-01")
     return [
         datetime.fromisoformat(
             time_info.get(f"TimePoint{index + 1}", fallback).replace("Z", "+00:00")
@@ -137,8 +138,8 @@ def _colors(source, channel_ranges, channel_colors=None):
 def _block(data, starts, sizes, blocks):
     valid = {key: min(blocks[key], sizes[key] - starts[key]) for key in AXES}
     slices = tuple(slice(starts[key], starts[key] + valid[key]) for key in AXES)
-    chunk = np.asarray(data[slices], dtype=np.uint16)
-    padded = np.zeros(tuple(blocks[key] for key in AXES), dtype=np.uint16)
+    chunk = np.asarray(data[slices])
+    padded = np.zeros(tuple(blocks[key] for key in AXES), dtype=data.dtype)
     padded[tuple(slice(0, valid[key]) for key in AXES)] = chunk
     return np.ascontiguousarray(padded)
 
@@ -151,20 +152,37 @@ def write_imaris(
     channel_ranges,
     excitation_wavelengths_nm,
     emission_wavelengths_nm,
-    source_ims,
+    source_ims=None,
+    scene=None,
     channel_colors=None,
 ):
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     sizes = dict(zip(AXES, map(int, data.shape), strict=True))
     blocks = {key: min(sizes[key], MAX_BLOCK[key]) for key in AXES}
-    source = _read_metadata(source_ims)
+    if source_ims is not None:
+        source = _read_metadata(source_ims)
+    else:
+        spacing = dict(zip("zyx", scene.spacing))
+        origin = dict(zip("zyx", scene.origin))
+        # The native API requires extents and absolute timestamps.
+        date = datetime.fromisoformat(scene.acquired) if scene.acquired else datetime(1970,1,1)
+        image = {"RecordingDate": date.isoformat()}
+        for i, axis in enumerate("xyz"):
+            image[f"ExtMin{i}"] = _number(origin[axis])
+            image[f"ExtMax{i}"] = _number(origin[axis] + sizes[axis] * (spacing[axis] or 1.0))
+        source = {"Image": image, "TimeInfo": {
+            f"TimePoint{i+1}": (date + timedelta(seconds=elapsed)).isoformat()
+            for i, elapsed in enumerate(scene.times)}}
+        for i, ch in enumerate(scene.channels):
+            source[f"Channel {i}"] = {"Color": " ".join(map(str,ch["color"]))}
     sections = _parameter_sections(
         source,
         sizes,
         channel_names,
         excitation_wavelengths_nm,
         emission_wavelengths_nm,
+        data.dtype.name,
     )
 
     class Progress(writer.CallbackClass):
@@ -177,7 +195,7 @@ def write_imaris(
             )
 
     converter = writer.ImageConverter(
-        "uint16",
+        data.dtype.name,
         writer.ImageSize(**sizes),
         writer.ImageSize(**dict.fromkeys(AXES, 1)),
         writer.DimensionSequence("x", "y", "z", "c", "t"),

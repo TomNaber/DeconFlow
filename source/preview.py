@@ -53,6 +53,7 @@ class Preview(ttk.Frame):
         self.on_log = lambda value: None
         self.on_render_log = lambda value: self.on_log(value)
         self.folder = None
+        self.scenes = {}
         self.filename = tk.StringVar()
         self.process = None
         self.connection = None
@@ -193,7 +194,12 @@ class Preview(ttk.Frame):
 
     @property
     def selected_path(self):
-        return self.folder / self.filename.get() if self.folder and self.filename.get() else None
+        scene = self.selected_scene
+        return Path(scene.path) if scene else None
+
+    @property
+    def selected_scene(self):
+        return self.scenes.get(self.filename.get())
 
     @property
     def selected_channels(self):
@@ -222,10 +228,10 @@ class Preview(ttk.Frame):
                 if (eligible is None or channel["index"] in eligible)
                 and (not visible_only or self.channel_visible(channel["index"], row))]
 
-    def set_folder(self, folder):
-        self.folder = Path(folder).expanduser()
-        names = [path.name for path in sorted(self.folder.glob("*.ims"))
-                 if not path.name.startswith(".") and path.is_file()] if self.folder.is_dir() else []
+    def set_folder(self, folder, scenes):
+        self.folder = folder
+        self.scenes = {scene.label:scene for scene in scenes}
+        names = list(self.scenes)
         self.files.configure(values=names)
         if self.filename.get() not in names:
             self.filename.set(names[0] if names else "")
@@ -254,7 +260,7 @@ class Preview(ttk.Frame):
 
     def matches_loaded(self):
         return (self.data is not None and self.selected_path is not None
-                and self.selected_path.resolve() == Path(self.data["path"]).resolve())
+                and self.selected_scene.key == (self.data["path"], self.data["scene_index"]))
 
     def configure_fiji(self, memory):
         key = str(memory)
@@ -395,7 +401,7 @@ class Preview(ttk.Frame):
         if path is None or self.disabled:
             return
         self.clear()
-        self.start_worker(str(path))
+        self.start_worker(self.selected_scene.key)
 
     def start_worker(self, path):
         context = multiprocessing.get_context("spawn")
@@ -440,8 +446,8 @@ class Preview(ttk.Frame):
         try:
             activity = directory / "activity.json"
             if self.disabled and activity.exists():
-                current = Path(json.loads(activity.read_text())["path"]).name
-                displayed = Path(self.data["path"]).name if self.data else "waiting for first sample"
+                current = json.loads(activity.read_text())["label"]
+                displayed = self.data["label"] if self.data else "waiting for first sample"
                 self.batch_status.set(f"Processing: {current}  |  Displaying: {displayed}")
             ready = directory / "ready.json"
             if ready.exists() and not self.batch_importing:
@@ -466,7 +472,7 @@ class Preview(ttk.Frame):
         self.data, self.deconvolved = original, result
         path = Path(original["path"])
         self.folder = path.parent
-        self.filename.set(path.name)
+        self.filename.set(original["label"])
         self.crop = {axis: [0, size] for axis, size in zip("zyx", original["shape"])}
         for mapping in (*self.channel_visibility, *self.channel_contrast):
             mapping.clear()

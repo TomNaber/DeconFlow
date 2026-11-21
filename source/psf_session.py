@@ -31,7 +31,7 @@ class PSFSession:
         self.scope = None
 
     def set_scope(self, path):
-        scope = str(Path(path).resolve()) if path is not None else None
+        scope = path
         if scope == self.scope:
             return
         for _, entry in self.entries.values():
