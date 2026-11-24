@@ -247,11 +247,11 @@ def validate_output(path, expected, scene):
         for wanted, found in zip(scene.channels, actual.channels):
             if not np.allclose(wanted["color"], found["color"], atol=1 / 255 + 1e-5):
                 raise ValueError(f"Output channel color differs for {wanted['name']}")
-        if len(scene.times) > 1 and (
+        if scene.times and (
             len(scene.times) != len(actual.times)
-            or not np.allclose(np.diff(scene.times), np.diff(actual.times), atol=0.002)
+            or not np.allclose(scene.times, actual.times, rtol=0, atol=0.002)
         ):
-            raise ValueError("Output time intervals differ")
+            raise ValueError("Output frame timestamps differ")
         for t, c in np.ndindex(expected.shape[:2]):
             pixels = ds.volume(t, c)
             if not np.array_equal(pixels, expected[t, c], equal_nan=True):

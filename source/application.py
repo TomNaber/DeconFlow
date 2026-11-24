@@ -715,9 +715,10 @@ class Application:
 
     def select_scene(self):
         scene = self.preview.selected_scene
-        if self.preview.data is not None and not self.preview.matches_loaded():
-            self.preview.clear()
         key = scene.key if scene else None
+        loading_previous = self.preview.busy == "load" and key != self.settings_scene
+        if loading_previous or (self.preview.data is not None and not self.preview.matches_loaded()):
+            self.preview.clear()
         if self.settings_scene != key:
             if self.settings_scene:
                 self.scene_settings[self.settings_scene] = copy.deepcopy((

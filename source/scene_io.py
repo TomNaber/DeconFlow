@@ -66,6 +66,18 @@ def quantity(obj, key, unit):
         return None
 
 
+def imagej_unit_factor(unit, target):
+    if not unit:
+        return None
+    from pint import get_application_registry
+    from pint.errors import DimensionalityError, UndefinedUnitError
+
+    try:
+        return get_application_registry().Quantity(1, str(unit)).to(target).magnitude
+    except (DimensionalityError, UndefinedUnitError, ValueError):
+        return None
+
+
 def ome_info(scene, image):
     pixels = image.pixels
     scene.spacing = tuple(quantity(pixels, f"physical_size_{a}", "um") for a in "zyx")
@@ -259,7 +271,11 @@ class Dataset:
                         if scene.acquired
                         else dates[0]
                     )
-                    scene.times = [(v - date).total_seconds() for v in dates]
+                    # IMS frame stamps can omit the offset supplied by RecordingDate.
+                    scene.times = [
+                        ((v if v.tzinfo else v.replace(tzinfo=date.tzinfo)) - date).total_seconds()
+                        for v in dates
+                    ]
                 except (ValueError, TypeError):
                     date = dates[0]
                     scene.times = [(v - date).total_seconds() for v in dates]
@@ -269,6 +285,8 @@ class Dataset:
     def _tiff(self, index):
         tf = self.handle
         series = tf.series[index]
+        if tf.is_ome and any(page is None for page in series.pages):
+            raise ValueError("OME-TIFF has missing image planes. Check that all companion files are present and readable.")
         axes = series.axes
         if axes in ("QYX", "IYX"):
             axes = "ZYX"
@@ -305,19 +323,26 @@ class Dataset:
                 unit = page.tags.get("ResolutionUnit")
                 um = {2: 25400.0, 3: 10000.0}.get(unit.value if unit else None)
                 ij = tf.imagej_metadata or {}
-                if um is None and ij.get("unit") in ("um", "µm", "micron"):
-                    um = 1.0
-                values = [ij.get("spacing") if um else None]
+                image_unit = ij.get("unit")
+                z_unit = ij.get("zunit", image_unit)
+                z_um = imagej_unit_factor(z_unit, "um") if z_unit else um
+                values = [abs(ij["spacing"]) * z_um if ij.get("spacing") and z_um else None]
                 for axis in "YX":
+                    axis_unit = ij.get("yunit", image_unit) if axis == "Y" else image_unit
+                    scale = um or imagej_unit_factor(axis_unit, "um")
                     tag = page.tags.get(axis + "Resolution")
                     values.append(
-                        um * tag.value[1] / tag.value[0]
-                        if um and tag and tag.value[0]
+                        scale * tag.value[1] / tag.value[0]
+                        if scale and tag and tag.value[0]
                         else None
                     )
                 scene.spacing = tuple(values)
                 if ij.get("finterval"):
-                    scene.times = [t * ij["finterval"] for t in range(shape[0])]
+                    seconds = imagej_unit_factor(ij.get("tunit", "s"), "s")
+                    if seconds:
+                        scene.times = [t * ij["finterval"] * seconds for t in range(shape[0])]
+                elif ij.get("fps", 0) > 0:
+                    scene.times = [t / ij["fps"] for t in range(shape[0])]
         return scene
 
     def _bioio(self, index):

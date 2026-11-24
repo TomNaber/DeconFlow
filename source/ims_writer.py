@@ -226,4 +226,13 @@ def write_imaris(
         print()
     finally:
         converter.Destroy()
+    # The SDK replaces RecordingDate with the first frame timestamp in Finish.
+    # Retain the acquisition origin for time series that start at nonzero DeltaT.
+    recording_date = source["Image"].get("RecordingDate")
+    if recording_date:
+        from source.edit_ims_channels import _set_text_attribute
+        with h5py.File(output_path, "r+") as handle:
+            image_info = handle["DataSetInfo/Image"]
+            if _text(image_info.attrs.get("RecordingDate")) != recording_date:
+                _set_text_attribute(image_info, "RecordingDate", recording_date)
     return output_path
