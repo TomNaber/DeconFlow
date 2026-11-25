@@ -356,7 +356,8 @@ def preserve_original_channel_metadata(input_path, output_path, indices):
                 source.copy(metadata, output["DataSetInfo"], name=name)
 
 
-def process_file(input_path, channels, psfs, record=None, *, file_index=1, n_files=1, scene_index=0):
+def process_file(input_path, channels, psfs, record=None, *, file_index=1, n_files=1,
+                 scene_index=0, disambiguate=False):
     record = {} if record is None else record
     counts = {int(key): value for key, value in CHANNEL_ITERATIONS.items()}
     iteration_tag = (str(next(iter(counts.values()))) if counts and len(set(counts.values())) == 1
@@ -370,7 +371,7 @@ def process_file(input_path, channels, psfs, record=None, *, file_index=1, n_fil
     tag = f"iter{iteration_tag}_reg{regularization_tag}"
     with Dataset(input_path) as reader:
         scene = reader.select(scene_index)
-        family, name = destination(scene, OUTPUT_FORMAT, tag)
+        family, name = destination(scene, OUTPUT_FORMAT, tag, disambiguate=disambiguate)
         output_path = OUTPUT_DIR / name
         record.update(
             save_location=str(output_path.resolve()),
@@ -536,13 +537,17 @@ def main():
 
 
 def run_batch(report):
+    disambiguate = set()
     if INPUT_FILES is None:
         scenes = [(Path(s.path),s.index) for s in discover(INPUT_DIR)]
     else:
         scenes = []
         for entry in INPUT_FILES:
             if isinstance(entry, dict):
-                scenes.append((Path(entry["path"]), int(entry["index"])))
+                key = Path(entry["path"]), int(entry["index"])
+                scenes.append(key)
+                if entry.get("disambiguate"):
+                    disambiguate.add(key)
             else:
                 path = Path(entry).expanduser()
                 try:
@@ -586,7 +591,8 @@ def run_batch(report):
             stat = input_path.stat()
             record.update(input_size_bytes=stat.st_size, input_mtime_ns=stat.st_mtime_ns)
             process_file(input_path, channels, psfs, record,
-                         file_index=file_index, n_files=len(scenes), scene_index=scene_index)
+                         file_index=file_index, n_files=len(scenes), scene_index=scene_index,
+                         disambiguate=(input_path, scene_index) in disambiguate)
         except Exception as error:
             record.update(status='failed', error=str(error), traceback=traceback.format_exc())
             print(f"FAILED: {input_path.name}", file=sys.stderr)

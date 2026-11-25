@@ -17,6 +17,7 @@ from PIL.PngImagePlugin import PngInfo
 from source.channel_adjustment import NEUTRAL_CONTRAST, apply_contrast
 from source.edit_ims_channels import NAMED_COLORS
 from source.preview_worker import channel_settings, run
+from source.scene_io import input_scene_label
 from source.preview_gestures import install_pinch
 from source.interaction import FrameScheduler, WheelZoom, wheel_steps, precise_wheel
 from source.view_controls import MIN_ZOOM, MAX_ZOOM, ZoomBar, pane_grid, plane_axes, draw_scale_bar
@@ -52,8 +53,8 @@ class Preview(ttk.Frame):
         self.on_batch_sample = lambda original: None
         self.on_log = lambda value: None
         self.on_render_log = lambda value: self.on_log(value)
-        self.folder = None
         self.scenes = {}
+        self.scene_labels = {}
         self.filename = tk.StringVar()
         self.process = None
         self.connection = None
@@ -229,12 +230,12 @@ class Preview(ttk.Frame):
                 and (not visible_only or self.channel_visible(channel["index"], row))]
 
     def set_folder(self, folder, scenes):
-        self.folder = folder
-        self.scenes = {scene.label:scene for scene in scenes}
-        names = list(self.scenes)
-        self.files.configure(values=names)
-        if self.filename.get() not in names:
-            self.filename.set(names[0] if names else "")
+        current = self.selected_scene
+        self.scenes = {input_scene_label(scene, folder): scene for scene in scenes}
+        self.scene_labels = {scene.key: label for label, scene in self.scenes.items()}
+        self.files.configure(values=list(self.scenes))
+        label = self.scene_labels.get(current.key) if current else None
+        self.filename.set(label if label is not None else next(iter(self.scenes), ""))
         self.update_controls()
 
     def set_disabled(self, disabled):
@@ -245,7 +246,7 @@ class Preview(ttk.Frame):
 
     def update_controls(self):
         disabled = self.disabled
-        self.files.configure(state="disabled" if disabled else "readonly")
+        self.files.configure(state="disabled" if disabled or not self.scenes else "readonly")
         self.load_button.configure(state="normal" if self.selected_path and not disabled and self.busy != "load" else "disabled")
         self.sync_button.configure(state="disabled" if disabled else "normal")
         self.zoom_slider.configure(state="normal" if self.data is not None else "disabled")
@@ -470,9 +471,9 @@ class Preview(ttk.Frame):
 
     def adopt_batch(self, original, result):
         self.data, self.deconvolved = original, result
-        path = Path(original["path"])
-        self.folder = path.parent
-        self.filename.set(original["label"])
+        label = self.scene_labels.get((original["path"], original["scene_index"]))
+        if label is not None:
+            self.filename.set(label)
         self.crop = {axis: [0, size] for axis, size in zip("zyx", original["shape"])}
         for mapping in (*self.channel_visibility, *self.channel_contrast):
             mapping.clear()

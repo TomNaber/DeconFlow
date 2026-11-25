@@ -18,16 +18,15 @@ SUFFIX = {
 }
 
 
-def destination(scene, requested, tag):
+def destination(scene, requested, tag, *, disambiguate=False):
     family = requested
     if family == "Follow input":
         family = scene.family if scene.family in SUFFIX else "OME-TIFF"
     path = Path(scene.path)
     suffix = SUFFIX[family]
     stem = path.stem if scene.family == "Imaris" else path.name
-    # Preserve historical IMS names. Distinguish compound suffixes, identical
-    # basenames from explicit input lists, and similarly named acquisitions.
-    if scene.family != "Imaris":
+    # Keep historical IMS names when they identify a single input.
+    if scene.family != "Imaris" or disambiguate:
         identity = f"{scene.path}\0{scene.index}".encode()
         stem += "-" + sha256(identity).hexdigest()[:10]
     if scene.series_count > 1:

@@ -1,4 +1,5 @@
 """Unified desktop workflow and coordination of PSF and deconvolution jobs."""
+from collections import Counter
 import configparser
 import copy
 import json
@@ -27,8 +28,9 @@ from source.scene_io import discover, OUTPUT_FORMATS
 from source.edit_ims_channels import NAMED_COLORS
 from source.median_kernels import MEDIAN_KERNELS, kernel_label
 from source.platform_support import process_session_options, stop_process_tree
-from source.preview import Preview
+from source.input_selector import InputSelector
 from source.interaction import scroll_pixels
+from source.preview import Preview
 from source.psf_channels import read_psf_channels
 from source.psf_session import PSFSession, memory_argument, memory_gb
 from source.psf_view import PSFView, load_projections
@@ -37,9 +39,9 @@ from source.ui_style import workspace_background
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = Path(os.environ.get('BATCH_DECONVOLUTION_WORKSPACE', ROOT))
 GENERATOR_FIELDS = [
-    ('PSF_SIZE_Z', 'PSF Z size (planes, odd)', 101, int),
-    ('PSF_SIZE_XY', 'PSF X/Y size (pixels, odd)', 81, int),
-    ('OVERSAMPLE_FACTOR', 'Calculation oversampling factor (odd)', 3, int),
+    ('PSF_SIZE_Z', 'PSF Z size (planes)', 101, int),
+    ('PSF_SIZE_XY', 'PSF X/Y size (pixels)', 81, int),
+    ('OVERSAMPLE_FACTOR', 'Calculation oversampling factor', 3, int),
     ('SCAN_DIRECTION', 'Axial scan direction', '', str),
     ('XY_PIXEL_SIZE_UM', 'Lateral pixel size X/Y (µm)', '', float),
     ('Z_STEP_UM', 'Axial sampling interval Z (µm)', '', float),
@@ -57,7 +59,7 @@ PAIRS = [
 TOOLTIPS = {
     'PSF_SIZE_Z': 'Number of planes in the generated PSF. Use an odd number for a central plane.',
     'PSF_SIZE_XY': 'Width and height of each PSF plane in pixels. Use an odd number for a central pixel.',
-    'OVERSAMPLE_FACTOR': 'A higher factor calculates the PSF on a finer grid and takes longer.',
+    'OVERSAMPLE_FACTOR': 'A higher factor calculates the PSF on a finer grid and takes longer.\nMust be odd.',
     'SCAN_DIRECTION': 'Direction the focal plane moved relative to the objective as the stack was acquired.',
     'XY_PIXEL_SIZE_UM': 'Width of one image pixel at the specimen.',
     'Z_STEP_UM': 'Distance between consecutive planes in the acquired stack.',
@@ -194,7 +196,6 @@ class Application:
         self.cancelled = False
         self.revision = 0
         self.psf_revision = 0
-        self.refresh_job = None
         self.view_token = 0
         self.view_loading = False
         self.psf_sync_job = None
@@ -205,7 +206,11 @@ class Application:
         self.export_folder = tk.StringVar()
         self.import_display = tk.StringVar()
         self.scan_generation = 0
+        self.scan_lock = threading.Lock()
         self.scanning = False
+        self.input_folder = None
+        self.input_scenes = []
+        self.unchecked_inputs = set()
         self.scene_settings = {}
         self.settings_scene = None
         if settings_path is None:
@@ -292,7 +297,7 @@ class Application:
                              '<Shift-MouseWheel>','<Shift-Button-4>','<Shift-Button-5>'):
                 w.bind_class(widget_class,sequence,self.scroll_field)
         self.setup = self.group('Setup')
-        _,holder = self.field(self.setup,'Deconvolution',0,'INPUT_DIR','Z-stack input folder',ROOT/'examples',str,'directory')
+        _,holder = self.field(self.setup,'Deconvolution',0,'INPUT_DIR','Z-stacks',ROOT/'examples',str,'directory')
         ttk.Button(holder,text='Refresh',command=self.refresh_input).pack(side='left',padx=(4,0))
         self.field(self.setup,'Deconvolution',1,'OUTPUT_DIR','Output folder','',str,'directory')
         self.field(self.setup,'Deconvolution',2,'OUTPUT_FORMAT','Output format','Follow input')
@@ -493,7 +498,7 @@ class Application:
         rows.extend(widget for widget in self.settings_packed_rows if widget.winfo_manager()=='pack')
         controls = []
         def collect(widget):
-            if isinstance(widget,(ttk.Entry,ttk.Combobox,ttk.Spinbox,ttk.Button,ttk.Checkbutton,ttk.Radiobutton)):
+            if isinstance(widget,(ttk.Entry,ttk.Combobox,ttk.Spinbox,ttk.Button,ttk.Menubutton,ttk.Checkbutton,ttk.Radiobutton)):
                 controls.append(widget)
             for child in widget.winfo_children():
                 collect(child)
@@ -530,6 +535,8 @@ class Application:
         parent.columnconfigure(1,weight=1)
         if kind is bool:
             control = ttk.Checkbutton(holder,variable=var)
+        elif name == 'INPUT_DIR':
+            control = InputSelector(holder,self.set_input_selection)
         elif name == 'OUTPUT_FORMAT':
             control = ttk.Combobox(holder,textvariable=var,values=OUTPUT_FORMATS,state='readonly')
         elif name == 'FIJI_MEMORY':
@@ -560,6 +567,13 @@ class Application:
                 initialdir = browse_initial_directory(var.get().strip(), file_path=browse!='directory')
                 value = pick_path(parent=self.window, initialdir=initialdir)
                 if value:
+                    if name == 'INPUT_DIR':
+                        folder = Path(value).resolve()
+                        if folder != self.input_folder:
+                            self.unchecked_inputs.clear()
+                        value = str(folder)
+                        if value == var.get():
+                            return
                     var.set(value)
             ttk.Button(holder,text='Browse…',command=choose).pack(side='left',padx=(4,0))
         var.trace_add('write',lambda *args:self.field_changed(group,name))
@@ -619,9 +633,7 @@ class Application:
         if self.loading:
             return
         if name=='INPUT_DIR':
-            if self.refresh_job:
-                self.window.after_cancel(self.refresh_job)
-            self.refresh_job = self.window.after(300,self.refresh_input)
+            self.refresh_input()
         self.invalidate(psf=group=='PSF generation' or name=='INPUT_DIR',
                         preview=name not in ('OUTPUT_DIR','OUTPUT_FORMAT','OVERWRITE'))
 
@@ -692,25 +704,68 @@ class Application:
             self.request('view',automatic=True)
         self.update_activity()
 
+    def show_input_selection(self):
+        self.field_widgets['INPUT_DIR'].display(
+            self.input_folder,self.input_scenes,self.unchecked_inputs,scanning=self.scanning)
+
+    def set_input_selection(self, keys, checked):
+        if self.scanning or self.batch_locked:
+            return
+        if checked:
+            self.unchecked_inputs.difference_update(keys)
+        else:
+            self.unchecked_inputs.update(keys)
+        previous = self.preview.selected_scene
+        self.update_input_preview()
+        current = self.preview.selected_scene
+        if (previous.key if previous else None) != (current.key if current else None):
+            self.select_scene()
+        else:
+            self.save_settings()
+
+    def update_input_preview(self):
+        self.show_input_selection()
+        self.preview.set_folder(self.input_folder,
+                                [scene for scene in self.input_scenes if scene.key not in self.unchecked_inputs])
+
+    def batch_input_files(self, single):
+        scenes = [self.preview.selected_scene] if single else self.input_scenes
+        imaris_names = Counter(Path(scene.path).stem.casefold() for scene in self.input_scenes
+                               if scene.family == 'Imaris')
+        entries = []
+        for scene in scenes:
+            if scene is None or scene.key in self.unchecked_inputs:
+                continue
+            entry = dict(path=scene.path,index=scene.index)
+            if scene.family == 'Imaris' and imaris_names[Path(scene.path).stem.casefold()] > 1:
+                entry['disambiguate'] = True
+            entries.append(entry)
+        return entries
+
     def refresh_input(self):
         if self.batch_locked:
             return
-        if self.refresh_job:
-            self.window.after_cancel(self.refresh_job)
-            self.refresh_job = None
-        folder = Path(self.fields['Deconvolution']['INPUT_DIR'][0].get()).expanduser()
+        value = self.fields['Deconvolution']['INPUT_DIR'][0].get().strip()
+        folder = Path(value).expanduser().absolute() if value else ROOT/'examples'
+        self.input_folder = folder
         self.scan_generation += 1
         generation = self.scan_generation
         self.scanning = True
-        self.update_activity()
+        self.show_input_selection()
+        self.preview.set_disabled(True)
         def scan():
             messages = []
-            try:
-                scenes = discover(folder,messages.append) if folder.is_dir() else []
-            except Exception as error:
-                messages.append(str(error))
-                scenes = []
-            self.events.put(('scan',generation,folder,scenes,messages))
+            with self.scan_lock:
+                if generation != self.scan_generation:
+                    return
+                folder_resolved = folder
+                try:
+                    folder_resolved = folder.resolve()
+                    scenes = discover(folder_resolved,messages.append,recursive=True)
+                except Exception as error:
+                    messages.append(str(error))
+                    scenes = []
+            self.events.put(('scan',generation,folder_resolved,scenes,messages))
         threading.Thread(target=scan,daemon=True).start()
 
     def select_scene(self):
@@ -728,7 +783,7 @@ class Application:
                 self.signature, self.definitions, self.assignments = signature, defs, assignments
                 self.preferences.clear()
                 self.preferences.update(prefs)
-            elif self.settings_scene and scene and self.signature != [ch['name'] for ch in scene.channels]:
+            elif (self.settings_scene or self.scene_settings) and scene and self.signature != [ch['name'] for ch in scene.channels]:
                 self.preferences.clear()
                 self.definitions = {}
                 self.assignments = {'internal':{}, 'external':{}}
@@ -1263,13 +1318,15 @@ class Application:
         if self.batch_locked:
             return
         try:
-            if self.refresh_job:
-                self.refresh_input()
             selected_path = self.preview.selected_path if single else None
             if self.scanning:
                 raise ValueError('Wait for input discovery to finish.')
             if single and (selected_path is None or not selected_path.exists()):
                 raise ValueError('Select an existing image in the preview to run single-image processing.')
+            if kind == 'batch':
+                input_files = self.batch_input_files(single)
+                if not input_files:
+                    raise ValueError('Check at least one Z-stack to process.')
             indices = self.preview.selected_channels if kind=='preview' else (self.enabled_indices() if kind=='view' else self.processing_indices())
             if not indices and kind != 'batch':
                 raise ValueError('Select at least one input channel.')
@@ -1285,10 +1342,7 @@ class Application:
                 self.fields['Deconvolution']['OUTPUT_DIR'][0].set(folder)
             settings = None if kind=='view' else self.deconvolution_settings(indices,batch=kind=='batch',require_psfs=False)
             if kind=='batch':
-                scenes = [self.preview.selected_scene] if single else self.preview.scenes.values()
-                settings['INPUT_FILES'] = [dict(path=s.path,index=s.index) for s in scenes]
-                if not settings['INPUT_FILES']:
-                    raise ValueError('Select a folder containing readable images.')
+                settings['INPUT_FILES'] = input_files
             if kind=='batch' and generator and self.export_enabled.get() and not self.export_folder.get().strip():
                 raise ValueError('Select a folder for exporting generated PSFs.')
             request = dict(kind=kind,single=single,automatic=automatic,started=perf_counter(),revision=self.revision,preview_revision=self.preview.revision,
@@ -1507,9 +1561,11 @@ class Application:
     def set_batch_locked(self,locked):
         self.batch_locked = locked
         if locked:
+            self.field_widgets['INPUT_DIR'].close()
             def visit(widget):
                 for child in widget.winfo_children():
-                    if isinstance(child,(ttk.Entry,ttk.Button,ttk.Checkbutton,ttk.Radiobutton,ttk.Combobox,ttk.Spinbox,ttk.Scale)):
+                    if isinstance(child,(ttk.Entry,ttk.Button,ttk.Menubutton,ttk.Checkbutton,ttk.Radiobutton,
+                                         ttk.Combobox,ttk.Spinbox,ttk.Scale)):
                         self.locked_widgets[child] = str(child.cget('state'))
                         child.configure(state='disabled')
                     visit(child)
@@ -1520,7 +1576,7 @@ class Application:
                     widget.configure(state=state)
             self.locked_widgets.clear()
             self.render_batch_channels()
-        self.preview.set_disabled(locked)
+        self.preview.set_disabled(locked or self.scanning)
         self.restore_button.configure(state='disabled' if locked else 'normal')
 
     def toggle_channel_adjustment(self):
@@ -1582,8 +1638,8 @@ class Application:
                             and (not self.processing_indices() or self.can_resolve(self.processing_indices())))
         self.run_button.configure(state='normal' if processing_ready else 'disabled')
         self.run_single_button.configure(state='normal' if processing_ready and self.preview.selected_path else 'disabled')
-        self.psf_view.view_button.configure(state='normal' if ready and not self.batch_locked and not self.view_loading else 'disabled')
-        self.psf_view.sync_button.configure(state='disabled' if self.batch_locked else 'normal')
+        self.psf_view.view_button.configure(state='normal' if ready and not self.scanning and not self.batch_locked and not self.view_loading else 'disabled')
+        self.psf_view.sync_button.configure(state='disabled' if self.batch_locked or self.scanning else 'normal')
         busy = self.psf_sync_job is not None or self.process is not None or self.export_task is not None or self.view_loading or self.preview.busy=='deconvolve' or self.preview.pending is not None or self.preview.sync_job is not None
         self.cancel_button.configure(state='normal' if busy else 'disabled')
         self.preview.cancel_button.configure(state='normal' if busy else 'disabled')
@@ -1603,7 +1659,9 @@ class Application:
                 _, generation, folder, scenes, messages = event
                 if generation == self.scan_generation:
                     self.scanning = False
-                    self.preview.set_folder(folder,scenes)
+                    self.input_folder, self.input_scenes = folder, scenes
+                    self.update_input_preview()
+                    self.preview.set_disabled(self.batch_locked)
                     for message in messages:
                         self.log(f'Cannot read {message}\n')
                     datasets = len({s.path for s in scenes})
@@ -1700,6 +1758,7 @@ class Application:
             return
         config = configparser.ConfigParser(interpolation=None)
         config['Updates'] = dict(ignored_version=self.ignored_update_version)
+        config['Z-stack input'] = dict(unchecked=json.dumps(sorted(self.unchecked_inputs)))
         for group,entries in self.fields.items():
             config[group] = {name:str(var.get()) for name,(var,_,_) in entries.items()}
         for name,var in self.auto_spacing_vars.items():
@@ -1773,6 +1832,12 @@ class Application:
                     self.assignments[source] = {k:(v if source=='internal' else str(Path(v).expanduser().resolve()))
                                                 for k,v in values.items() if k.isdigit() and isinstance(v,str)
                                                 and (v.startswith('internal:') if source=='internal' else Path(v).is_absolute())}
+            unchecked = json.loads(config.get('Z-stack input','unchecked',fallback='[]'))
+            if not isinstance(unchecked,list) or not all(
+                    isinstance(key,list) and len(key) == 2 and isinstance(key[0],str)
+                    and type(key[1]) is int and key[1] >= 0 for key in unchecked):
+                raise ValueError('Invalid saved Z-stack selection.')
+            self.unchecked_inputs = {tuple(key) for key in unchecked}
         except (OSError,ValueError,TypeError,configparser.Error) as error:
             self.log(f'Could not load all saved settings: {error}\n')
 
@@ -1781,6 +1846,7 @@ class Application:
             return
         self.cancel()
         self.loading = True
+        self.unchecked_inputs.clear()
         for var in self.auto_spacing_vars.values():
             var.set(True)
         for group,entries in self.defaults.items():
@@ -1806,6 +1872,7 @@ class Application:
             messagebox.showinfo('Job running','Cancel the current job or wait for it to finish before closing.',parent=self.window)
             return
         self.cancel_psf_sync()
+        self.field_widgets['INPUT_DIR'].close()
         self.preview.close()
         self.psf_view.close()
         self.view_token += 1

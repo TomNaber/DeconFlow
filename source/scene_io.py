@@ -45,6 +45,18 @@ class Scene:
         return self.path, self.index
 
 
+def input_path_label(path, folder):
+    path = Path(path)
+    return str(path.relative_to(folder)) if path.is_relative_to(folder) else str(path)
+
+
+def input_scene_label(scene, folder):
+    label = input_path_label(scene.path, folder)
+    if scene.series_count > 1 or Path(scene.path).suffix.lower() == ".lif":
+        label = f"{label} [{scene.index + 1}] {scene.name}"
+    return label
+
+
 def channel(index, name=None, color=None, **metadata):
     return dict(
         index=index,
@@ -450,30 +462,47 @@ class Dataset:
         return np.asarray(data).reshape(self.scene.shape[2:])
 
 
-def discover(folder, on_error=print):
+def input_candidates(folder, supported, recursive, on_error):
+    for directory, subdirs, files in folder.walk(on_error=on_error):
+        # A Zarr store is one dataset, including stores without a .zarr suffix.
+        # Symlinked directories are listed as files and are never traversed.
+        candidates = []
+        for name in sorted(set(subdirs) | set(files)):
+            if name.startswith("."):
+                continue
+            path = directory / name
+            if path.is_dir():
+                if path.suffix.lower() == ".zarr" or any(
+                    (path / marker).is_file() for marker in (".zattrs", ".zgroup", "zarr.json")
+                ):
+                    candidates.append(path)
+            elif path.suffix.lower() in supported:
+                candidates.append(path)
+        stores = {path.name for path in candidates}
+        subdirs[:] = sorted(name for name in subdirs
+                            if recursive and not name.startswith(".") and name not in stores)
+        yield from candidates
+
+
+def discover(folder, on_error=print, *, recursive=False):
     from bioio_bioformats.reader_metadata import ReaderMetadata
 
+    folder = Path(folder).resolve()
     supported = {e.strip().lower() for e in ReaderMetadata.get_supported_extensions()}
+    supported.update(TIFF_EXTENSIONS | {".ims"})
     seen, groups = set(), []
-    for path in sorted(Path(folder).iterdir()):
-        if path.name.startswith(".") or path.resolve() in seen:
-            continue
-        suffix = path.suffix.lower()
-        if path.is_dir():
-            if suffix != ".zarr" and not any(
-                (path / p).is_file() for p in (".zattrs", "zarr.json")
-            ):
-                continue
-        elif suffix not in supported | TIFF_EXTENSIONS | {".ims"}:
-            continue
+    for path in input_candidates(folder, supported, recursive, on_error):
+        label = input_path_label(path, folder)
         try:
+            if path.resolve() in seen:
+                continue
             with Dataset(path) as ds:
                 scenes = []
                 for index in ds.indices:
                     try:
                         scenes.append(ds.select(index))
                     except Exception as error:
-                        on_error(f"{path.name} scene {index + 1}: {error}")
+                        on_error(f"{label} scene {index + 1}: {error}")
                 if scenes:
                     # Some secondary files also open alone. Prefer the reader
                     # which declares the complete set of constituent files.
@@ -485,5 +514,5 @@ def discover(folder, on_error=print):
                     groups.append((ds.files, scenes))
                     seen.update(ds.files)
         except Exception as error:
-            on_error(f"{path.name}: {error}")
+            on_error(f"{label}: {error}")
     return [scene for _, scenes in groups for scene in scenes]
